@@ -49,12 +49,21 @@ class LoadFormat(StrEnum):
     FASTSAFETENSORS = "fastsafetensors"
 
 
+class InPageCache(StrEnum):
+    """In Page Cache options"""
+
+    NONE = ""
+    TRUE = "True"
+    FALSE = "False"
+
+
 @dataclass
 class LogResult:
     """Results of one benchmark run"""
 
     time: str = ""
     vllm_version: str = ""
+    in_page_cache: InPageCache = InPageCache.NONE
     sleep_mode: bool = False
     model: str = ""
     load_format: LoadFormat = LoadFormat.UNKNOWN
@@ -71,6 +80,7 @@ class LogResult:
         return [
             "Time",
             "vLLM Version",
+            "In Page Cache",
             "Sleep/Wake",
             "Model",
             "Load Format",
@@ -87,6 +97,7 @@ class LogResult:
         return [
             self.time,
             self.vllm_version,
+            str(self.in_page_cache),
             str(self.sleep_mode),
             self.model,
             str(self.load_format),
@@ -311,6 +322,7 @@ def parse_logs(logs: str) -> LogResult:
 
     # Strings to be searched on logging ouput in order to extract values
 
+    in_page_cache_mode = "LLMDBENCH_VLLM_STANDALONE_IN_PAGE_CACHE="
     model_sleep_mode = "'enable_sleep_mode':"
     model_load_format = "load_format=LoadFormat."
     # Model loading took 15.2209 GB and 12.221976 seconds
@@ -327,10 +339,12 @@ def parse_logs(logs: str) -> LogResult:
     log_result.time = datetime.now().astimezone().isoformat()
 
     # loop from the bottom to catch latest statistics before old ones
+    cache_mode = "unknown"
     sleep_mode = ""
     for line in reversed(logs.splitlines()):
         if (
             sleep_mode != ""
+            and log_result.in_page_cache != ""
             and log_result.load_format != LoadFormat.UNKNOWN
             and log_result.load_time != 0
             and log_result.sleep != 0
@@ -341,6 +355,16 @@ def parse_logs(logs: str) -> LogResult:
             break
 
         line = line.strip()
+
+        if cache_mode == "unknown":
+            start_index = line.find(in_page_cache_mode)
+            if start_index >= 0:
+                start_index += len(in_page_cache_mode)
+                cache_mode = line[start_index:].strip().lower()
+                if cache_mode in ["true", "yes"]:
+                    log_result.in_page_cache = InPageCache.TRUE
+                elif cache_mode in ["false", "no"]:
+                    log_result.in_page_cache = InPageCache.FALSE
 
         if sleep_mode == "":
             start_index = line.find(model_sleep_mode)
