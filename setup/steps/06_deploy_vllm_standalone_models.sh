@@ -5,29 +5,6 @@ if [[ $LLMDBENCH_CONTROL_ENVIRONMENT_TYPE_STANDALONE_ACTIVE -eq 1 ]]; then
 
   extract_environment
 
-  # create prepropcessor configmap
-  configmapfile=$LLMDBENCH_CONTROL_WORK_DIR/setup/yamls/${LLMDBENCH_CURRENT_STEP}_a_configmap_preprocess.yaml
-  cat <<EOF > $configmapfile
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: llm-d-benchmark-preprocess
-  namespace: ${LLMDBENCH_VLLM_COMMON_NAMESPACE}
-data:
-EOF
-
-  preprocessfile=$(find ${LLMDBENCH_MAIN_DIR}/workload/preprocesses -name standalone*)
-  preprocessfilename=$(echo ${preprocessfile} | rev | cut -d '/' -f1 | rev)
-
-  echo "  $preprocessfilename: |" >> "$configmapfile"
-  while IFS= read -r line; do
-      echo "    $line" >> "$configmapfile"
-  done < "$preprocessfile"
-
-  announce "🚚 Creating configmap with contents of file $preprocessfilename ..."
-
-  llmdbench_execute_cmd "${LLMDBENCH_CONTROL_KCMD} apply -f $configmapfile" ${LLMDBENCH_CONTROL_DRY_RUN} ${LLMDBENCH_CONTROL_VERBOSE}
-
   for model in ${LLMDBENCH_DEPLOY_MODEL_LIST//,/ }; do
     modelfn=$(echo ${model} | ${LLMDBENCH_CONTROL_SCMD} 's^/^___^g' )
     cat << EOF > $LLMDBENCH_CONTROL_WORK_DIR/setup/yamls/${LLMDBENCH_CURRENT_STEP}_a_deployment_${modelfn}.yaml
@@ -88,9 +65,6 @@ spec:
 
           echo "vllm extra arguments: '\${extraargs}'"
 
-          # run preprocess
-          /dev/preprocess/$preprocessfilename
-
           $(render_string $LLMDBENCH_VLLM_STANDALONE_ARGS $model) --model-loader-extra-config "\${extraargs}"
         env:
         - name: LLMDBENCH_VLLM_STANDALONE_MODEL
@@ -138,16 +112,16 @@ spec:
             $(echo "$LLMDBENCH_VLLM_COMMON_ACCELERATOR_RESOURCE: \"${LLMDBENCH_VLLM_COMMON_ACCELERATOR_NR}\"")
             ephemeral-storage: ${LLMDBENCH_VLLM_STANDALONE_EPHEMERAL_STORAGE}
         volumeMounts:
-        - name: preprocess
-          mountPath: /dev/preprocess
+        - name: preprocesses
+          mountPath: /workload/preprocesses
         - name: cache-volume
           mountPath: ${LLMDBENCH_VLLM_STANDALONE_PVC_MOUNTPOINT}
         - name: shm
           mountPath: /dev/shm
       volumes:
-      - name: preprocess
+      - name: preprocesses
         configMap:
-          name: llm-d-benchmark-preprocess
+          name: llm-d-benchmark-preprocesses
           defaultMode: 0500
       - name: cache-volume
         persistentVolumeClaim:
