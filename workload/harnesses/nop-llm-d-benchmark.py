@@ -4,9 +4,10 @@
 Startup logs benchmark
 """
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from enum import StrEnum
+import io
 import json
 import os
 import re
@@ -27,6 +28,104 @@ logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 60.0  # time (seconds) to wait for request
 MAX_VLLM_WAIT = 15.0 * 60.0  # time (seconds) to wait for vllm to respond
+
+DEFINED_CATEGORIES = [
+    {
+        "title": "detect platform",
+        "start": "No plugins for group",
+        "end": "detected platform",
+    },
+    {
+        "title": "add CLI Args",
+        "start": "All plugins in this group loaded",
+        "end": "vLLM API server version",
+    },
+    {
+        "title": "Get Model Info",
+        "start": "non-default args:",
+        "end": "This model supports",
+    },
+    {
+        "title": "Worker Initialization",
+        "start": "Setting max_num_batched_tokens",
+        "end": "Initializing a V1 LLM engine",
+    },
+    {
+        "title": "Model Loading",
+        "start": "checkpoint shards:  0%",
+        "end": "Model loading took",
+    },
+    {
+        "title": "Pytorch Compilation",
+        "start": "Start compiling function",
+        "end": "torch.compile takes",
+        "children": [
+            {
+                "title": "Dynamo",
+                "start": "Start compiling function",
+                "end": "Dynamo bytecode transform line",
+            },
+            {
+                "title": "Inductor",
+                "start": "De-functionalized",
+                "end": "Compiling a graph",
+            },
+            {
+                "title": "Dynamo Serialization",
+                "start": "Computing graph saved",
+                "end": "Dynamo transformed",
+            },
+        ],
+    },
+    {
+        "title": "CUDA Graph Capture",
+        "start": "Capturing CUDA graph shapes: 0%",
+        "end": "Capturing CUDA graph shapes: 100%",
+    },
+    {
+        "title": "API Server Starts",
+        "start": "EngineCore waiting for work",
+        "end": "Application startup complete",
+    },
+]
+
+
+@dataclass
+class LogCategory:
+    """Log category"""
+
+    title: str = ""
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    parent_title: str = ""
+    start_line: str = ""
+    end_line: str = ""
+    children: "LogCategory" = field(default_factory=list)
+
+    @staticmethod
+    def header() -> list[str]:
+        """csv header"""
+        return [
+            "title",
+            "start_time",
+            "end_time",
+            "parent_title",
+            "start_line",
+            "end_line",
+        ]
+
+    def row(self) -> list[str]:
+        """csv row"""
+        return [
+            self.title,
+            self.start_time.astimezone().isoformat()
+            if self.start_time is not None
+            else "",
+            self.end_time.astimezone().isoformat() if self.end_time is not None else "",
+            self.parent_title,
+            self.start_line,
+            self.end_line,
+        ]
 
 
 class LoadFormat(StrEnum):
@@ -68,8 +167,8 @@ class LogResult:
     def header() -> list[str]:
         """csv header"""
         header = []
-        for field in fields(LogResult):
-            header.append(field.name)
+        for f in fields(LogResult):
+            header.append(f.name)
 
         return header
 
@@ -269,6 +368,78 @@ def get_pod_logs(v1: client.CoreV1Api, namespace: str, pod_name: str) -> bytes:
     return response.data
 
 
+def convert_logging_time(value: str) -> datetime:
+    """converts the log time to object"""
+    # input example "13:56:55" or "13:56:55.116"
+
+    # Define the format string that matches the input time string
+    time_format = "%m-%d %H:%M:%S.%f" if "." in value else "%m-%d %H:%M:%S"
+
+    return datetime.strptime(value, time_format)
+
+
+def extract_datetime(log_line: str) -> datetime:
+    """extracts datetime"""
+    words = log_line.split()
+    # datetime is the second an third words
+    return convert_logging_time(f"{words[1]} {words[2]}")
+
+
+def initialize_log_categories(
+    defined_categories: list[Any], parent_title: str, log_categories: list[LogCategory]
+):
+    """initialize categories"""
+    for defined_category in defined_categories:
+        log_category = LogCategory()
+        log_category.title = defined_category.get("title")
+        log_category.parent_title = parent_title
+        defined_children = defined_category.get("children")
+        if defined_children is not None:
+            initialize_log_categories(
+                defined_children, log_category.title, log_category.children
+            )
+
+        log_categories.append(log_category)
+
+
+def categorize_logs(logs: str) -> list[LogCategory]:
+    """parse logs and categorize it"""
+
+    log_categories = []
+    initialize_log_categories(DEFINED_CATEGORIES, "", log_categories)
+    populate_log_categories(0, logs.splitlines(), log_categories, DEFINED_CATEGORIES)
+    return log_categories
+
+
+def populate_log_categories(
+    current_index: int,
+    log_lines: list[str],
+    log_categories: list[LogCategory],
+    defined_categories: list[Any],
+):
+    """populate categories from log lines"""
+    i = current_index
+    while i < len(defined_categories):
+        log_line = log_lines[0]
+        defined_category = defined_categories[i]
+        start = defined_category.get("start")
+        end = defined_category.get("end")
+        defined_children = defined_category.get("children")
+        if start in log_line:
+            log_categories[i].start_line = log_line
+            log_categories[1].start_time = extract_datetime(log_line)
+            if defined_children is not None:
+                populate_log_categories(
+                    0, log_lines, log_categories[i].children, defined_children
+                )
+        elif end in log_line:
+            log_categories[i].end_line = log_line
+            log_categories[1].end_time = extract_datetime(log_line)
+
+        log_lines = log_lines[1:]
+        i += 1
+
+
 def parse_logs(logs: str) -> LogResult:
     """parse vllm logs"""
 
@@ -407,6 +578,16 @@ def write_log_results_to_csv(log_results: list[LogResult], file_path: str):
     logger.info("csv file saved to path: %s", file_path)
 
 
+def write_log_categories_to_csv(
+    log_categories: list[LogCategory], file: io.BufferedWriter
+):
+    """writes csv log results"""
+
+    for log_category in log_categories:
+        file.write(f"{','.join(log_category.row())}\n")
+        write_log_categories_to_csv(log_category.children, file)
+
+
 def main():
     """main entry point"""
 
@@ -458,6 +639,9 @@ def main():
     log_result.vllm_version = vllm_version
     log_result.model = vllm_model
 
+    # categorize logs
+    log_categories = categorize_logs(pod_logs.decode("utf-8"))
+
     os.makedirs(requests_dir, exist_ok=True)
 
     # write vllm log file
@@ -474,8 +658,15 @@ def main():
     # append new result to list
     log_results.append(log_result)
 
-    # write csv file
+    # write log results csv file
     write_log_results_to_csv(log_results, cvs_filepath)
+
+    # write log categories csv file
+    csv_categories_filepath = os.path.join(requests_dir, "nop_categories.csv")
+    with open(csv_categories_filepath, "w", encoding="utf-8", newline="") as file:
+        file.write(f"{','.join(LogCategory.header())}\n")
+        write_log_categories_to_csv(log_categories, file)
+        logger.info("csv categories file saved to path: %s", csv_categories_filepath)
 
 
 if __name__ == "__main__":

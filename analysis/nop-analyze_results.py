@@ -4,7 +4,9 @@
 Startup logs benchmark
 """
 
-from dataclasses import dataclass, fields
+import csv
+from dataclasses import dataclass, field, fields
+from datetime import datetime
 from enum import StrEnum
 import io
 import os
@@ -20,6 +22,46 @@ logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 60.0  # time (seconds) to wait for request
 MAX_VLLM_WAIT = 15.0 * 60.0  # time (seconds) to wait for vllm to respond
+
+
+@dataclass
+class LogCategory:
+    """Log category"""
+
+    title: str = ""
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    parent_title: str = ""
+    start_line: str = ""
+    end_line: str = ""
+    children: "LogCategory" = field(default_factory=list)
+
+    @staticmethod
+    def header() -> list[str]:
+        """csv header"""
+        return [
+            "title",
+            "start_time",
+            "end_time",
+            "parent_title",
+            "start_line",
+            "end_line",
+        ]
+
+    def row(self) -> list[str]:
+        """csv row"""
+        return [
+            self.title,
+            self.start_time.astimezone().isoformat()
+            if self.start_time is not None
+            else "None",
+            self.end_time.astimezone().isoformat()
+            if self.end_time is not None
+            else "None",
+            self.parent_title,
+            self.start_line,
+            self.end_line,
+        ]
 
 
 class LoadFormat(StrEnum):
@@ -94,8 +136,8 @@ class LogResult:
     def header_csv() -> list[str]:
         """csv header"""
         header = []
-        for field in fields(LogResult):
-            header.append(field.name)
+        for f in fields(LogResult):
+            header.append(f.name)
 
         return header
 
@@ -190,6 +232,40 @@ def read_log_results_from_csv(file_path: str) -> list[LogResult]:
     return log_results
 
 
+def read_log_categories_from_csv(file_path: str) -> list[LogCategory]:
+    """read csv log categories"""
+
+    log_categories = []
+    if not os.path.isfile(file_path):
+        logger.info("no csv categories file found on path: %s", file_path)
+        return log_categories
+
+    cat_dict: dict[str, LogCategory] = {}
+    with open(file_path, "r", encoding="utf-8", newline="") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            log_category = LogCategory()
+            log_category.title = row.get("title")
+            iso_str = row.get("start_time")
+            if iso_str != "":
+                log_category.start_time = datetime.fromisoformat(iso_str)
+            iso_str = row.get("end_time")
+            if iso_str != "":
+                log_category.end_time = datetime.fromisoformat(iso_str)
+            log_category.parent_title = row.get("parent_title")
+            log_category.start_line = row.get("start_line")
+            log_category.end_line = row.get("end_line")
+            cat_dict[log_category.title] = log_category
+            parent_category = cat_dict.get(log_category.parent_title)
+            if parent_category is not None:
+                parent_category.children.append(log_category)
+            else:
+                log_categories.append(log_category)
+
+    logger.info("csv categories file found on path: %s", file_path)
+    return log_categories
+
+
 def main():
     """main entry point"""
 
@@ -217,6 +293,13 @@ def main():
     with open(analysis_filepath, "w", encoding="utf-8") as file:
         write_log_results(file, log_results)
         logger.info("analysis file saved to path: %s", analysis_filepath)
+
+    # read possible existent csv file
+    cvs_filepath = os.path.join(requests_dir, "nop_categories.csv")
+    log_categories = read_log_categories_from_csv(cvs_filepath)
+    if len(log_categories) == 0:
+        logger.info("no csv category file available for analysis")
+        return
 
 
 if __name__ == "__main__":

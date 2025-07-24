@@ -6,6 +6,15 @@
 export LLMDBENCH_VLLM_TENSORIZER_URI=""
 export LLMDBENCH_VLLM_STANDALONE_MODEL_LOADER_EXTRA_CONFIG="{}"
 
+# export a custom log format path
+shopt -s nocasematch # Enable case-insensitive matching
+if [[ ${VLLM_LOGGING_LEVEL} == "DEBUG" ]]; then
+    # export a custom log format path
+    # the preprocess python script will create the file with custom log format
+    export VLLM_LOGGING_CONFIG_PATH=/tmp/vllm_logging_config.json
+fi
+shopt -u nocasematch # Disable case-insensitive matching
+
 # installs dependencies for load formats
 if [[ ${LLMDBENCH_VLLM_STANDALONE_VLLM_LOAD_FORMAT} == "fastsafetensors" ]]; then
     pip install --root-user-action=ignore fastsafetensors==0.1.14
