@@ -120,12 +120,15 @@ class WorkloadGenerator(StrEnum):
             Inference Perf
         VLLM_BENCHMARK: str
             benchmark_serving from vLLM
+        NOP: str
+            vLLM Load times
     """
 
     FMPERF = auto()
     GUIDELLM = auto()
     INFERENCE_PERF = 'inference-perf'
     VLLM_BENCHMARK = 'vllm-benchmark'
+    NOP = 'nop'
 
 
 class Load(BaseModel):

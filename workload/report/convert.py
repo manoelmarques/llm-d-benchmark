@@ -10,6 +10,7 @@ import datetime
 import os
 import re
 import sys
+from typing import Any
 import yaml
 
 import numpy as np
@@ -177,6 +178,12 @@ def _import_llmd_benchmark_run_data(results_path: str) -> dict:
                                 envars['LLMDBENCH_VLLM_STANDALONE_IMAGE_TAG'],
                     }] * int(envars['LLMDBENCH_VLLM_COMMON_REPLICAS'])
                 },
+                "metadata": {
+                    "load_format": envars['LLMDBENCH_VLLM_STANDALONE_VLLM_LOAD_FORMAT'],
+                    "logging_level": envars['LLMDBENCH_VLLM_STANDALONE_VLLM_LOGGING_LEVEL'],
+                    "vllm_server_dev_mode": envars['LLMDBENCH_VLLM_STANDALONE_VLLM_SERVER_DEV_MODE'],
+                    "preprocess": envars['LLMDBENCH_VLLM_STANDALONE_PREPROCESS'],
+                }
             },
         }
     else:
@@ -821,6 +828,140 @@ def import_inference_perf(results_file: str) -> BenchmarkReport:
 
     return BenchmarkReport(**br_dict)
 
+def import_nop(results_file: str) -> BenchmarkReport:
+    """Import data from a nop run as a BenchmarkReport.
+
+    Args:
+        results_file (str): Results file to import.
+
+    Returns:
+        BenchmarkReport: Imported data.
+    """
+    check_file(results_file)
+
+    results = import_yaml(results_file)
+
+    # Import scenario details from llm-d-benchmark run as a dict following the
+    # schema of BenchmarkReport
+    br_dict = _import_llmd_benchmark_run_data(os.path.dirname(results_file))
+
+    results_dict = {
+        "scenario": {
+            "model": {
+                "name" : ""
+            },
+            "load": {
+                "name": WorkloadGenerator.NOP,
+            },
+            "metadata": {
+            },
+        },
+        "metrics": {
+            "metadata": {
+            },
+            "time": {
+                "duration": 0,
+            },
+            "requests": {
+                "total": 0,
+                "failures": 0,
+                "input_length": {
+                    "units": Units.COUNT,
+                    "mean": 0,
+                    "min": 0,
+                    "p10": 0,
+                    "p50": 0,
+                    "p90": 0,
+                    "max": 0,
+                },
+                "output_length": {
+                    "units": Units.COUNT,
+                    "mean": 0,
+                    "min": 0,
+                    "p10": 0,
+                    "p50": 0,
+                    "p90": 0,
+                    "max": 0,
+                },
+            },
+            "latency": {
+                "time_to_first_token": {
+                    "units": Units.MS,
+                    "mean": 0,
+                    "min": 0,
+                    "p10": 0,
+                    "p50": 0,
+                    "p90": 0,
+                    "max": 0,
+                },
+                "normalized_time_per_output_token": {
+                    "units": Units.MS_PER_TOKEN,
+                    "mean": 0,
+                    "min": 0,
+                    "p10": 0,
+                    "p50": 0,
+                    "p90": 0,
+                    "max": 0,
+                },
+                "time_per_output_token": {
+                    "units": Units.MS_PER_TOKEN,
+                    "mean": 0,
+                    "min": 0,
+                    "p10": 0,
+                    "p50": 0,
+                    "p90": 0,
+                    "max": 0,
+                },
+                "inter_token_latency": {
+                    "units": Units.MS_PER_TOKEN,
+                    "mean": 0,
+                    "min": 0,
+                    "p10": 0,
+                    "p50": 0,
+                    "p90": 0,
+                    "max": 0,
+                },
+                "request_latency": {
+                    "units": Units.MS,
+                    "mean": 0,
+                    "min": 0,
+                    "p10": 0,
+                    "p50": 0,
+                    "p90": 0,
+                    "max": 0,
+                },
+            },
+            "throughput": {
+                "output_tokens_per_sec": 0,
+                "total_tokens_per_sec": 0,
+                "requests_per_sec": 0,
+            },
+        },
+    }
+
+    def _import_categories(cat_list: list[dict[str,Any]]) -> list[dict[str,Any]]:
+        new_cat_list = []
+        for cat in cat_list:
+            cat_dict = {}
+            cat_dict["title"] = cat["title"]
+            cat_dict["elapsed"] = cat["elapsed"]
+            categories = cat.get("categories")
+            if categories is not None:
+                cat_dict["categories"] = _import_categories(categories)
+
+            new_cat_list.append(cat_dict)
+
+        return new_cat_list
+
+    results_dict["scenario"]["model"]["name"] = results["scenario"]["model"]["name"]
+    results_dict["scenario"]["metadata"] = results["scenario"]["metadata"]
+    results_dict["metrics"]["metadata"] = results["metrics"]["metadata"]
+
+    update_dict(br_dict, results_dict)
+
+    return BenchmarkReport(**br_dict)
+
+
 
 if __name__ == "__main__":
 
@@ -872,6 +1013,11 @@ if __name__ == "__main__":
                 import_vllm_benchmark(args.results_file).export_yaml(args.output_file)
             else:
                 import_vllm_benchmark(args.results_file).print_yaml()
+        case WorkloadGenerator.NOP:
+            if args.output_file:
+                import_nop(args.results_file).export_yaml(args.output_file)
+            else:
+                import_nop(args.results_file).print_yaml()
         case _:
             sys.stderr.write('Unsupported workload generator: %s\n' %
                 args.workload_generator)

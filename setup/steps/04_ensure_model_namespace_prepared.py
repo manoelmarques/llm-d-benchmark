@@ -86,7 +86,7 @@ def add_scc_to_service_account(api: pykube.HTTPClient, scc_name: str, service_ac
         else:
             announce(f'Adding "{sa_user_name}" to SCC "{scc_name}"...')
             scc.obj["users"].append(sa_user_name)
-            scc.update()
+            # scc.update()
             announce(f'Successfully updated SCC "{scc_name}"')
 
 def main():
