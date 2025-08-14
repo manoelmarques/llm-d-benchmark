@@ -374,6 +374,17 @@ function add_command {
 }
 export -f add_command
 
+function add_nodename {
+  local nodename=${1}
+
+  if [[ -n ${nodename} ]]; then
+    echo "nodeName: ${nodename}"
+  else
+    echo ""
+  fi
+}
+export -f add_nodename
+
 function add_command_line_options {
   local object_to_render=${1}
 

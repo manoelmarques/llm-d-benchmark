@@ -52,6 +52,7 @@ spec:
                 operator: In
                 values:
                 - $(echo $LLMDBENCH_VLLM_COMMON_AFFINITY | cut -d ':' -f 2)
+      $(add_nodename ${LLMDBENCH_VLLM_STANDALONE_NODENAME})
       containers:
       - name: vllm-standalone-$(model_attribute $model label)
         image: $(get_image ${LLMDBENCH_VLLM_STANDALONE_IMAGE_REGISTRY} ${LLMDBENCH_VLLM_STANDALONE_IMAGE_REPO} ${LLMDBENCH_VLLM_STANDALONE_IMAGE_NAME} ${LLMDBENCH_VLLM_STANDALONE_IMAGE_TAG})
