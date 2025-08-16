@@ -67,7 +67,7 @@ def create_categories_dataframe(
     blank_string = "  " * level if level > 0 else ""
     total = 0.0
     for category in categories:
-        elapsed = category.get("elapsed", 0)
+        elapsed = category["elapsed"]["value"]
         total += elapsed
         elapsed_str = f"{elapsed:.3f}" if elapsed != 0 else ""
         data = {
@@ -97,22 +97,19 @@ def write_benchmark_reports(file: io.TextIOWrapper, benchmark_report: BenchmarkR
     """write benchmark reports to file"""
 
     scenario_model_name = benchmark_report.scenario.model.name
+    scenario_platform = benchmark_report.scenario.platform
     scenario_metadata = benchmark_report.scenario.metadata
     metrics_metadata = benchmark_report.metrics.metadata
-    transfer_rate = 0.0
-    if metrics_metadata["load_time"] > 0:
-        transfer_rate = metrics_metadata["size"] / metrics_metadata["load_time"]
     data = {
-        "Time": [metrics_metadata["time"]],
-        "vLLM Version": [scenario_metadata["vllm_version"]],
+        "vLLM Version": [scenario_platform.engine[0].version],
         "Sleep/Wake": [str(scenario_metadata["sleep_mode"])],
         "Model": [scenario_model_name],
         "Load Format": [scenario_metadata["load_format"]],
-        "Elapsed(secs)": [f"{metrics_metadata['load_time']:.2f}"],
-        "Rate(GB/s)": [f"{transfer_rate:.2f}"],
-        "Sleep(secs)": [f"{metrics_metadata['sleep']:.2f}"],
-        "Freed GPU(GiB)": [f"{metrics_metadata['gpu_freed']:.2f}"],
-        "In Use GPU(GiB)": [f"{metrics_metadata['gpu_in_use']:.2f}"],
+        "Elapsed(secs)": [f"{metrics_metadata['load_time']['value']:.2f}"],
+        "Rate(GiB/s)": [f"{metrics_metadata['transfer_rate']['value']:.2f}"],
+        "Sleep(secs)": [f"{metrics_metadata['sleep']['value']:.2f}"],
+        "Freed GPU(GiB)": [f"{metrics_metadata['gpu_freed']['value']:.2f}"],
+        "In Use GPU(GiB)": [f"{metrics_metadata['gpu_in_use']['value']:.2f}"],
         "Wake(secs)": [f"{metrics_metadata['wake']:.2f}"],
     }
     data_frame = pd.DataFrame(data)

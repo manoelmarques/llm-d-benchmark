@@ -7,7 +7,7 @@ Startup logs benchmark
 from __future__ import annotations
 from dataclasses import dataclass, field, fields
 from datetime import datetime
-from enum import StrEnum
+from enum import StrEnum, auto
 import io
 import json
 import os
@@ -22,6 +22,10 @@ import requests
 import yaml
 
 from kubernetes import client, config
+
+# pylint: disable=too-many-lines,too-many-instance-attributes
+# pylint: disable=too-many-locals,too-many-boolean-expressions,too-many-nested-blocks,
+# pylint: disable=too-many-branches,too-many-statements,broad-exception-caught,too-many-locals
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -98,6 +102,132 @@ DEFINED_CATEGORIES = [
 ]
 
 
+class Units(StrEnum):
+    """
+    Enumeration of units
+
+    Attributes
+        COUNT: str
+            Count
+        MS: str
+            Milliseconds
+        S: str
+            Seconds
+        MB: str
+            Megabytes
+        GB: str
+            Gigabytes
+        TB: str
+            Terabytes
+        MIB: str
+            Mebibytes
+        GIB: str
+            Gibibytes
+        TIB: str
+            Tebibytes
+        MBIT_PER_S: str
+            Megabbits per second
+        GBIT_PER_S: str
+            Gigabits per second
+        TBIT_PER_S: str
+            Terabits per second
+        GIB_PER_S: str
+            GiB per second
+        MB_PER_S: str
+            Megabytes per second
+        GB_PER_S: str
+            Gigabytes per second
+        TB_PER_S: str
+            Terabytes per second
+        MS_PER_TOKEN: str
+            Milliseconds per token
+        WATTS: str
+            Watts
+    """
+
+    # Quantity
+    COUNT = auto()
+    # Portion
+    PERCENT = auto()
+    FRACTION = auto()
+    # Time
+    MS = auto()
+    S = auto()
+    # Memory
+    MB = "MB"
+    GB = "GB"
+    TB = "TB"
+    MIB = "MiB"
+    GIB = "GiB"
+    TIB = "TiB"
+    # Bandwidth
+    MBIT_PER_S = "Mbit/s"
+    GBIT_PER_S = "Gbit/s"
+    TBIT_PER_S = "Tbit/s"
+    MB_PER_S = "MB/s"
+    GB_PER_S = "GB/s"
+    TB_PER_S = "TB/s"
+    GIB_PER_S = "GiB/s"
+    # Generation latency
+    MS_PER_TOKEN = "ms/token"
+    # Power
+    WATTS = "Watts"
+
+
+class UnitsValue:
+    """Value with units"""
+
+    def __init__(self, units: Units, value: float):
+        self._units = units
+        self._value = value
+
+    @property
+    def units(self) -> Units:
+        """units property"""
+        return self._units
+
+    @property
+    def value(self) -> float:
+        """value property"""
+        return self._value
+
+    @value.setter
+    def value(self, new_value: float):
+        self._value = new_value
+
+    def dump(self) -> dict[str, Any]:
+        """Convert UnitsValue to dict.
+
+        Returns:
+            dict: Defined fields of UnitsValue.
+        """
+        return {
+            "units": self.units,
+            "value": self.value,
+        }
+
+
+class UnitsSecondsValue(UnitsValue):
+    """Value with units in seconds"""
+
+    def __init__(self):
+        super().__init__(Units.S, 0.0)
+
+
+class UnitsGiBValue(UnitsValue):
+    """Value with units in GiB"""
+
+    def __init__(self):
+        super().__init__(Units.GIB, 0)
+
+
+class UnitsGiBPerSecValue(UnitsValue):
+    """Value with units in GiB/s"""
+
+    def __init__(self):
+        super().__init__(Units.GIB_PER_S, 0)
+
+
 @dataclass
 class BenchmarkCategory:
     """Benchmark category"""
@@ -125,33 +255,18 @@ class BenchmarkCategory:
 
     @staticmethod
     def _dump(benchmark_category: BenchmarkCategory) -> list[dict[str, Any]]:
-        time_format = "%m-%d %H:%M:%S.%f"
         categories = []
         category = benchmark_category
         while category is not None:
             dump_dict = {}
             dump_dict["title"] = category.title
-            dump_dict["elapsed"] = (
+            elapsed = UnitsSecondsValue()
+            elapsed.value = (
                 (category.end_time - category.start_time).total_seconds()
                 if category.start_time is not None and category.end_time is not None
                 else 0.0
             )
-            dump_dict["start_time"] = (
-                category.start_time.strftime(time_format)[:-3]
-                if category.start_time is not None
-                else ""
-            )
-            dump_dict["end_time"] = (
-                category.end_time.strftime(time_format)[:-3]
-                if category.end_time is not None
-                else ""
-            )
-            dump_dict["start"] = category.start
-            dump_dict["end"] = category.end
-            dump_dict["start_line"] = category.start_line
-            dump_dict["start_line_number"] = category.start_line_number
-            dump_dict["end_line"] = category.end_line
-            dump_dict["end_line_number"] = category.end_line_number
+            dump_dict["elapsed"] = elapsed
 
             if category.root_child is not None:
                 dump_dict["categories"] = BenchmarkCategory._dump(category.root_child)
@@ -209,11 +324,49 @@ class ModelScenario:
 
 
 @dataclass
+class PlatformEngineScenario:
+    """Platform Engine Scenario"""
+
+    name: str = ""
+    version: str = ""
+
+    def dump(self) -> dict[str, Any]:
+        """Convert PlatformEngineScenario to dict.
+
+        Returns:
+            dict: Defined fields of PlatformEngineScenario.
+        """
+        dump_dict = {}
+        for f in fields(self):
+            dump_dict[f.name] = getattr(self, f.name)
+
+        return dump_dict
+
+
+@dataclass
+class PlatformScenario:
+    """Platform Scenario"""
+
+    engine: list[PlatformEngineScenario] = field(default_factory=list)
+
+    def dump(self) -> dict[str, Any]:
+        """Convert PlatformScenario to dict.
+
+        Returns:
+            dict: Defined fields of PlatformScenario.
+        """
+        engine_list = []
+        for e in self.engine:
+            engine_list.append(e.dump())
+
+        return {"engine": engine_list}
+
+
+@dataclass
 class MetadataScenario:
     """Metadata Scenario"""
 
     load_format: LoadFormat = LoadFormat.UNKNOWN
-    vllm_version: str = ""
     sleep_mode: bool = False
 
     def dump(self) -> dict[str, Any]:
@@ -239,6 +392,7 @@ class BenchmarkScenario:
     """Benchmark Scenario"""
 
     model: ModelScenario = field(default_factory=ModelScenario)
+    plaftorm: PlatformScenario = field(default_factory=PlatformScenario)
     metadata: MetadataScenario = field(default_factory=MetadataScenario)
 
     def dump(self) -> dict[str, Any]:
@@ -260,16 +414,44 @@ class BenchmarkScenario:
 
 
 @dataclass
-class MetadataMetrics:
-    """Metadata Metrics"""
+class MetricsTime:
+    """Timing details of benchmark run."""
 
-    time: str = ""
-    load_time: float = 0.0
-    size: float = 0.0
-    sleep: float = 0.0
-    gpu_freed: float = 0.0
-    gpu_in_use: float = 0.0
-    wake: float = 0.0
+    start: UnitsSecondsValue = field(default_factory=UnitsSecondsValue)
+    """Start time of benchmark run, in seconds from Unix epoch."""
+    stop: UnitsSecondsValue = field(default_factory=UnitsSecondsValue)
+    """End time of benchmark run, in seconds from Unix epoch."""
+
+    def dump(self) -> dict[str, Any]:
+        """Convert MetricsTime to dict.
+
+        Returns:
+            dict: Defined fields of MetricsTime.
+        """
+        dump_dict = {}
+        for f in fields(self):
+            value = getattr(self, f.name)
+            dump_dict[f.name] = (
+                value.dump()
+                if hasattr(value, "dump") and callable(value.dump)
+                else value
+            )
+        duration = UnitsSecondsValue()
+        duration.value = self.stop.value - self.start.value
+        dump_dict["duration"] = duration
+        return dump_dict
+
+
+@dataclass
+class MetricsMetadata:
+    """Metrics Metadata"""
+
+    load_time: UnitsSecondsValue = field(default_factory=UnitsSecondsValue)
+    size: UnitsGiBValue = field(default_factory=UnitsGiBValue)
+    sleep: UnitsSecondsValue = field(default_factory=UnitsSecondsValue)
+    gpu_freed: UnitsGiBValue = field(default_factory=UnitsGiBValue)
+    gpu_in_use: UnitsGiBValue = field(default_factory=UnitsGiBValue)
+    wake: UnitsSecondsValue = field(default_factory=UnitsSecondsValue)
     root_category: BenchmarkCategory | None = None
 
     def dump(self) -> dict[str, Any]:
@@ -290,6 +472,11 @@ class MetadataMetrics:
                 else value
             )
 
+        transfer_rate = UnitsGiBPerSecValue()
+        if self.load_time.value != 0.0:
+            transfer_rate.value = self.size.value / self.load_time.value
+        dump_dict["transfer_rate"] = transfer_rate
+
         if self.root_category is not None:
             dump_dict["categories"] = self.root_category.dump()
 
@@ -300,7 +487,8 @@ class MetadataMetrics:
 class BenchmarkMetrics:
     """Benchmark Metrics"""
 
-    metadata: MetadataMetrics = field(default_factory=MetadataMetrics)
+    time: MetricsTime = field(default_factory=MetricsTime)
+    metadata: MetricsMetadata = field(default_factory=MetricsMetadata)
 
     def dump(self) -> dict[str, Any]:
         """Convert BenchmarkMetrics to dict.
@@ -728,7 +916,6 @@ def parse_logs(logs: str) -> BenchmarkResult:
     model_gpu_freed = "Sleep mode freed"
 
     benchmark_result = BenchmarkResult()
-    benchmark_result.metrics.metadata.time = datetime.now().astimezone().isoformat()
 
     # loop from the bottom to catch latest statistics before old ones
     sleep_mode = ""
@@ -736,11 +923,11 @@ def parse_logs(logs: str) -> BenchmarkResult:
         if (
             sleep_mode != ""
             and benchmark_result.scenario.metadata.load_format != LoadFormat.UNKNOWN
-            and benchmark_result.metrics.metadata.load_time != 0
-            and benchmark_result.metrics.metadata.sleep != 0
-            and benchmark_result.metrics.metadata.gpu_freed != 0
-            and benchmark_result.metrics.metadata.gpu_in_use != 0
-            and benchmark_result.metrics.metadata.wake != 0
+            and benchmark_result.metrics.metadata.load_time.value != 0
+            and benchmark_result.metrics.metadata.sleep.value != 0
+            and benchmark_result.metrics.metadata.gpu_freed.value != 0
+            and benchmark_result.metrics.metadata.gpu_in_use.value != 0
+            and benchmark_result.metrics.metadata.wake.value != 0
         ):
             break
 
@@ -769,30 +956,36 @@ def parse_logs(logs: str) -> BenchmarkResult:
                             benchmark_result.scenario.metadata.load_format = f
                             break
 
-        if benchmark_result.metrics.metadata.load_time == 0:
+        if benchmark_result.metrics.metadata.load_time.value == 0:
             floats = find_floats_in_line(model_load_string, line)
             if len(floats) > 1:
-                benchmark_result.metrics.metadata.size = floats[0]
-                benchmark_result.metrics.metadata.load_time = floats[1]
+                benchmark_result.metrics.metadata.size.value = floats[0]
+                benchmark_result.metrics.metadata.load_time.value = floats[1]
                 continue
 
-        if benchmark_result.metrics.metadata.sleep == 0 and model_sleep_string in line:
+        if (
+            benchmark_result.metrics.metadata.sleep.value == 0
+            and model_sleep_string in line
+        ):
             floats = find_floats_in_line(model_took_string, line)
             if len(floats) > 0:
-                benchmark_result.metrics.metadata.sleep = floats[0]
+                benchmark_result.metrics.metadata.sleep.value = floats[0]
                 continue
 
-        if benchmark_result.metrics.metadata.gpu_freed == 0:
+        if benchmark_result.metrics.metadata.gpu_freed.value == 0:
             floats = find_floats_in_line(model_gpu_freed, line)
             if len(floats) > 1:
-                benchmark_result.metrics.metadata.gpu_freed = floats[0]
-                benchmark_result.metrics.metadata.gpu_in_use = floats[1]
+                benchmark_result.metrics.metadata.gpu_freed.value = floats[0]
+                benchmark_result.metrics.metadata.gpu_in_use.value = floats[1]
                 continue
 
-        if benchmark_result.metrics.metadata.wake == 0 and model_wake_string in line:
+        if (
+            benchmark_result.metrics.metadata.wake.value == 0
+            and model_wake_string in line
+        ):
             floats = find_floats_in_line(model_took_string, line)
             if len(floats) > 0:
-                benchmark_result.metrics.metadata.wake = floats[0]
+                benchmark_result.metrics.metadata.wake.value = floats[0]
                 continue
 
     return benchmark_result
@@ -886,6 +1079,8 @@ def write_benchmark_categories_to_log(
 def main():
     """main entry point"""
 
+    start_time = datetime.now().timestamp()
+
     envs = get_env_variables(
         [
             "LLMDBENCH_HARNESS_NAMESPACE",
@@ -960,6 +1155,9 @@ def main():
     with open(logs_filepath, "wb") as file:
         file.write(pod_logs)
         logger.info("vllm log file saved to path: %s", logs_filepath)
+
+    benchmark_result.metrics.time.start.value = start_time
+    benchmark_result.metrics.time.stop.value = datetime.now().timestamp()
 
     # write results yaml file
     result_filepath = os.path.join(requests_dir, "result.yaml")
