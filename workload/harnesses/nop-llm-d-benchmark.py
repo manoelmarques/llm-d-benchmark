@@ -36,6 +36,8 @@ MAX_VLLM_WAIT = 15.0 * 60.0  # time (seconds) to wait for vllm to respond
 # MM-DD HH:MM:SS or MM-DD HH:MM:SS.MMM
 DATE_PATTERN = re.compile(r"\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}(?:\.\d{3})?")
 
+PROCESS_PATTERN = re.compile(r"\(.*?\)")
+
 DEFINED_CATEGORIES = [
     {
         "title": "Detect Platform",
@@ -54,13 +56,18 @@ DEFINED_CATEGORIES = [
     },
     {
         "title": "Get Model Info",
-        "start": "non-default args:",
+        "start": "vLLM API server version",
         "end": "Using max model len",
     },
     {
         "title": "Worker Initialization",
-        "start": "Setting max_num_batched_tokens",
+        "start": "Using max model len",
         "end": "Initializing a V1 LLM engine",
+    },
+    {
+        "title": "Initialize V1 LLM Engine",
+        "start": "Initializing a V1 LLM engine",
+        "end": "Starting to load model",
     },
     {
         "title": "Model Loading",
@@ -69,30 +76,40 @@ DEFINED_CATEGORIES = [
     },
     {
         "title": "Pytorch Compilation",
-        "start": "Start compiling function",
-        "end": "torch.compile takes",
+        "start": "Model loading took",
+        "end": "Capturing CUDA graph.*?0%",
         "children": [
             {
                 "title": "Dynamo",
-                "start": "Start compiling function",
+                "start": "Model loading took",
                 "end": "Dynamo bytecode transform",
             },
             {
                 "title": "Inductor",
-                "start": "De-functionalized",
-                "end": "Compiling a graph",
+                "start": "Dynamo bytecode transform",
+                "end": "Compiling a graph|Directly load the compiled graph",
             },
             {
                 "title": "Dynamo Serialization",
-                "start": "Computation graph saved",
+                "start": "Compiling a graph|Directly load the compiled graph",
                 "end": "torch.compile takes",
+            },
+            {
+                "title": "Pytorch Compile End",
+                "start": "torch.compile takes",
+                "end": "Capturing CUDA graph.*?0%",
             },
         ],
     },
     {
         "title": "CUDA Graph Capture",
         "start": "Capturing CUDA graph.*?0%",
-        "end": "Capturing CUDA graph.*?100%",
+        "end": "Graph capturing finished",
+    },
+    {
+        "title": "Initialize Engine",
+        "start": "Graph capturing finished",
+        "end": "EngineCore waiting for work",
     },
     {
         "title": "API Server Starts",
@@ -103,43 +120,76 @@ DEFINED_CATEGORIES = [
 
 
 @dataclass
+class BenchmarkProcess:
+    """Process details"""
+
+    name: str = ""
+    pid: int = 0
+
+    @staticmethod
+    def process_from_line(line: str) -> BenchmarkProcess:
+        """access process details from pattern"""
+        process = BenchmarkProcess()
+        matches = PROCESS_PATTERN.findall(line)
+        for match in matches:
+            end_index = match.find("pid=")
+            if end_index > 0:
+                process.name = match[:end_index].strip("( ")
+                process.pid = extract_ints(match)[0]
+                break
+
+        return process
+
+    def desc(self) -> str:
+        """benchmark description"""
+        if self.name == "" and self.pid == 0:
+            return ""
+        return f"{self.name} pid={self.pid}"
+
+
+@dataclass
+class BenchmarkCategoryDetails:
+    """Category details"""
+
+    time: datetime | None = None
+    pattern: re.Pattern[str] | None = None
+    process: BenchmarkProcess = field(default_factory=BenchmarkProcess)
+    line: str = ""
+    line_number: int = 0
+
+    def matches(self, line: str) -> bool:
+        """check if line matches"""
+        match = self.pattern.search(line)
+        return match is not None
+
+
+@dataclass
 class BenchmarkCategory:
     """Benchmark category"""
 
     title: str = ""
-    start_time: datetime | None = None
-    end_time: datetime | None = None
-    start: str = ""
-    start_pattern: re.Pattern[str] | None = None
-    end: str = ""
-    end_pattern: re.Pattern[str] | None = None
-    start_line: str = ""
-    start_line_number: int = 0
-    end_line: str = ""
-    end_line_number: int = 0
+    start: BenchmarkCategoryDetails = field(default_factory=BenchmarkCategoryDetails)
+    end: BenchmarkCategoryDetails = field(default_factory=BenchmarkCategoryDetails)
     next: BenchmarkCategory | None = None
     parent: BenchmarkCategory | None = None
     root_child: BenchmarkCategory | None = None
 
-    def is_start_line(self, line: str) -> bool:
-        """check if line is a start line"""
-        if self.start_pattern is None:
-            self.start_pattern = re.compile(rf"{self.start}")
-        match = self.start_pattern.search(line)
-        return match is not None
+    def get_process_desc(self) -> str:
+        """get process description"""
+        procs = [self.start.process.desc()]
+        if self.start.process != self.end.process:
+            procs.append(self.end.process.desc())
+        for proc in procs:
+            if len(proc) > 0:
+                return ", ".join(procs)
 
-    def is_end_line(self, line: str) -> bool:
-        """check if line is an end line"""
-        if self.end_pattern is None:
-            self.end_pattern = re.compile(rf"{self.end}")
-        match = self.end_pattern.search(line)
-        return match is not None
+        return ""
 
     def dump(self) -> list[dict[str, Any]]:
-        """Convert LogCategory to list.
+        """Convert BenchmarkCategory to list.
 
         Returns:
-            list: Defined fields of LogCategory.
+            list: Defined fields of BenchmarkCategory.
         """
         return BenchmarkCategory._dump(self)
 
@@ -149,10 +199,14 @@ class BenchmarkCategory:
         category = benchmark_category
         while category is not None:
             dump_dict = {}
-            dump_dict["title"] = category.title
+            proc_desc = category.get_process_desc()
+            if len(proc_desc) > 0:
+                dump_dict["title"] = f"{category.title} ({proc_desc})"
+            else:
+                dump_dict["title"] = category.title
             dump_dict["elapsed"] = (
-                (category.end_time - category.start_time).total_seconds()
-                if category.start_time is not None and category.end_time is not None
+                (category.end.time - category.start.time).total_seconds()
+                if category.start.time is not None and category.end.time is not None
                 else 0.0
             )
 
@@ -606,8 +660,10 @@ def initialize_benchmark_categories(
         prev_benchmark_category = benchmark_category
 
         benchmark_category.title = defined_category.get("title")
-        benchmark_category.start = defined_category.get("start")
-        benchmark_category.end = defined_category.get("end")
+        benchmark_category.start.pattern = re.compile(
+            rf"{defined_category.get('start')}"
+        )
+        benchmark_category.end.pattern = re.compile(rf"{defined_category.get('end')}")
         benchmark_category.parent = parent
         if (
             benchmark_category.parent is not None
@@ -674,18 +730,18 @@ def add_uncategorized_categories(benchmark_category: BenchmarkCategory):
         next_category = category.next
         if (
             next_category is not None
-            and category.end_time is not None
-            and next_category.start_time is not None
-            and category.end_time < next_category.start_time
+            and category.end.time is not None
+            and next_category.start.time is not None
+            and category.end.time < next_category.start.time
         ):
             benchmark_category = BenchmarkCategory()
             benchmark_category.title = "Uncategorized"
-            benchmark_category.start_time = category.end_time
-            benchmark_category.start_line = category.end_line
-            benchmark_category.start_line_number = category.end_line_number
-            benchmark_category.end_time = next_category.start_time
-            benchmark_category.end_line = next_category.start_line
-            benchmark_category.end_line_number = next_category.start_line_number
+            benchmark_category.start.time = category.end.time
+            benchmark_category.start.line = category.end.line
+            benchmark_category.start.line_number = category.end.line_number
+            benchmark_category.end.time = next_category.start.time
+            benchmark_category.end.line = next_category.start.line
+            benchmark_category.end.line_number = next_category.start.line_number
             benchmark_category.parent = category.parent
             benchmark_category.next = next_category
             category.next = benchmark_category
@@ -702,33 +758,39 @@ def populate_benchmark_category(
 
     category = benchmark_category
     while category is not None and index < len(log_list):
-        if category.start_line == "" and category.is_start_line(log_list[index]):
-            category.start_time = extract_datetime(log_list[index])
+        if category.start.line == "" and category.start.matches(log_list[index]):
+            category.start.time = extract_datetime(log_list[index])
             # if date extract failed, try next log line
-            while category.start_time is None:
+            while category.start.time is None:
                 index += 1
                 if index >= len(log_list):
                     return index
 
-                category.start_time = extract_datetime(log_list[index])
+                category.start.time = extract_datetime(log_list[index])
 
-            if category.start_time is not None:
-                category.start_line = log_list[index]
-                category.start_line_number = index + 1
+            if category.start.time is not None:
+                category.start.line = log_list[index]
+                category.start.process = BenchmarkProcess.process_from_line(
+                    category.start.line
+                )
+                category.start.line_number = index + 1
 
-        if category.end_line == "" and category.is_end_line(log_list[index]):
-            category.end_time = extract_datetime(log_list[index])
+        if category.end.line == "" and category.end.matches(log_list[index]):
+            category.end.time = extract_datetime(log_list[index])
             # if date extract failed, try next log line
-            while category.end_time is None:
+            while category.end.time is None:
                 index += 1
                 if index >= len(log_list):
                     return index
 
-                category.end_time = extract_datetime(log_list[index])
+                category.end.time = extract_datetime(log_list[index])
 
-            if category.end_time is not None:
-                category.end_line = log_list[index]
-                category.end_line_number = index + 1
+            if category.end.time is not None:
+                category.end.line = log_list[index]
+                category.end.process = BenchmarkProcess.process_from_line(
+                    category.end.line
+                )
+                category.end.line_number = index + 1
 
         if category.root_child is not None:
             index = populate_benchmark_category(index, log_list, category.root_child)
@@ -851,9 +913,14 @@ def find_floats_in_line(key: str, line: str) -> list[float]:
     return []
 
 
-def extract_floats(text) -> list[float]:
+def extract_floats(text: str) -> list[float]:
     """extracts all float numbers from a string"""
     return [float(num) for num in re.findall(r"[-+]?\d*\.\d+|\d+", text)]
+
+
+def extract_ints(text: str) -> list[int]:
+    """extracts all int numbers from a string"""
+    return [int(num) for num in re.findall(r"-?\d+", text)]
 
 
 def convert_result(result_filepath: str, output_filepath: str) -> tuple[str, str, int]:
@@ -895,34 +962,38 @@ def write_benchmark_categories_to_log(
     category = benchmark_category
     while category is not None:
         elapsed = ""
-        if category.start_time is not None and category.end_time is not None:
-            time_difference = category.end_time - category.start_time
+        if category.start.time is not None and category.end.time is not None:
+            time_difference = category.end.time - category.start.time
             elapsed = f"{time_difference.total_seconds():.3f}"
 
+        file.write("\n")
         file.write(f"{blank_string}Log category   : '{category.title}'\n")
+        file.write(f"{blank_string}  Process      : '{category.get_process_desc()}'\n")
         time_format = "%m-%d %H:%M:%S.%f"
         date_str = (
-            category.start_time.strftime(time_format)[:-3]
-            if category.start_time is not None
+            category.start.time.strftime(time_format)[:-3]
+            if category.start.time is not None
             else ""
         )
-        file.write(f"{blank_string}  start date   : '{date_str}'\n")
+        file.write(f"{blank_string}  Start date   : '{date_str}'\n")
         date_str = (
-            category.end_time.strftime(time_format)[:-3]
-            if category.end_time is not None
+            category.end.time.strftime(time_format)[:-3]
+            if category.end.time is not None
             else ""
         )
-        file.write(f"{blank_string}  end date     : '{date_str}'\n")
-        file.write(f"{blank_string}  elapsed      : {elapsed}\n")
-        file.write(f"{blank_string}  start pattern: '{category.start}'\n")
-        file.write(f"{blank_string}  end pattern  : '{category.end}'\n")
+        file.write(f"{blank_string}  End date     : '{date_str}'\n")
+        file.write(f"{blank_string}  Elapsed      : {elapsed}\n")
         file.write(
-            f"{blank_string}  start line   : "
-            f"{category.start_line_number} '{category.start_line}'\n"
+            f"{blank_string}  Start pattern: '{category.start.pattern.pattern}'\n"
+        )
+        file.write(f"{blank_string}  End pattern  : '{category.end.pattern.pattern}'\n")
+        file.write(
+            f"{blank_string}  Start line   : "
+            f"{category.start.line_number} '{category.start.line}'\n"
         )
         file.write(
-            f"{blank_string}  end line     : "
-            f"{category.end_line_number} '{category.end_line}'\n"
+            f"{blank_string}  End line     : "
+            f"{category.end.line_number} '{category.end.line}'\n"
         )
         if category.root_child is not None:
             write_benchmark_categories_to_log(level + 1, category.root_child, file)
