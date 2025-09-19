@@ -951,6 +951,9 @@ def import_nop(results_file: str) -> BenchmarkReport:
         for cat in cat_list:
             cat_dict = {}
             cat_dict["title"] = cat["title"]
+            process = cat.get("process")
+            if process is not None:
+                cat_dict["process"] = process["name"]
             cat_dict["elapsed"] = {
                         "units": Units.S,
                         "value": cat["elapsed"],
