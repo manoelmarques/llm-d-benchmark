@@ -257,6 +257,8 @@ for method in ${LLMDBENCH_DEPLOY_METHODS//,/ }; do
       cleanup_pre_execution
 
       export LLMDBENCH_HARNESS_STACK_ENDPOINT_PORT=
+      export LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_PORT=
+      export LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_VLLM_PORT=
       export LLMDBENCH_VLLM_FQDN=".${LLMDBENCH_VLLM_COMMON_NAMESPACE}${LLMDBENCH_VLLM_COMMON_FQDN}"
 
       if [[ $LLMDBENCH_CONTROL_ENVIRONMENT_TYPE_STANDALONE_ACTIVE -eq 1 ]]; then
@@ -265,6 +267,8 @@ for method in ${LLMDBENCH_DEPLOY_METHODS//,/ }; do
         export LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME=$(${LLMDBENCH_CONTROL_KCMD} --namespace "$LLMDBENCH_VLLM_COMMON_NAMESPACE" get service --no-headers -l stood-up-via=${LLMDBENCH_DEPLOY_METHODS} | awk '{print $1}' || true)
         export LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME=${LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME}${LLMDBENCH_VLLM_FQDN}
         export LLMDBENCH_HARNESS_STACK_ENDPOINT_PORT=80
+        export LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_PORT=81
+        export LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_VLLM_PORT=82
       fi
 
       if [[ $LLMDBENCH_CONTROL_ENVIRONMENT_TYPE_MODELSERVICE_ACTIVE -eq 1 ]]; then
@@ -277,6 +281,8 @@ for method in ${LLMDBENCH_DEPLOY_METHODS//,/ }; do
             export LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME=${LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME}${LLMDBENCH_VLLM_FQDN}
         fi
         export LLMDBENCH_HARNESS_STACK_ENDPOINT_PORT=80
+        export LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_PORT=81
+        export LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_VLLM_PORT=82
       fi
 
       if [[ $LLMDBENCH_CONTROL_ENVIRONMENT_TYPE_STANDALONE_ACTIVE -eq 0 && $LLMDBENCH_CONTROL_ENVIRONMENT_TYPE_MODELSERVICE_ACTIVE -eq 0 ]]; then
@@ -307,7 +313,7 @@ for method in ${LLMDBENCH_DEPLOY_METHODS//,/ }; do
             for probe in livenessProbe readinessProbe; do
               export LLMDBENCH_HARNESS_STACK_ENDPOINT_PORT=$(
                 ${LLMDBENCH_CONTROL_KCMD} --namespace "$LLMDBENCH_VLLM_COMMON_NAMESPACE" get pod/$LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME --no-headers -o json |
-                jq -r ".spec.containers[0].${probe}.httpGet.port" || 
+                jq -r ".spec.containers[0].${probe}.httpGet.port" ||
                 true
               )
               if [[ ! -z $LLMDBENCH_HARNESS_STACK_ENDPOINT_PORT && $LLMDBENCH_HARNESS_STACK_ENDPOINT_PORT != "null" ]]; then
@@ -317,8 +323,8 @@ for method in ${LLMDBENCH_DEPLOY_METHODS//,/ }; do
             if [[ -z $LLMDBENCH_HARNESS_STACK_ENDPOINT_PORT || $LLMDBENCH_HARNESS_STACK_ENDPOINT_PORT == "null" ]]; then
               # try to use metrics port (should work for default vLLM
               export LLMDBENCH_HARNESS_STACK_ENDPOINT_PORT=$(
-                ${LLMDBENCH_CONTROL_KCMD} --namespace "$LLMDBENCH_VLLM_COMMON_NAMESPACE" get pod/$LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME --no-headers -o json | 
-                jq -r ".spec.containers[0].ports[] | select(.name == \"metrics\") | .containerPort" || 
+                ${LLMDBENCH_CONTROL_KCMD} --namespace "$LLMDBENCH_VLLM_COMMON_NAMESPACE" get pod/$LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME --no-headers -o json |
+                jq -r ".spec.containers[0].ports[] | select(.name == \"metrics\") | .containerPort" ||
                 true
               )
             fi
@@ -337,6 +343,8 @@ for method in ${LLMDBENCH_DEPLOY_METHODS//,/ }; do
         export LLMDBENCH_HARNESS_STACK_TYPE=mock
         export LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME=mock
         export LLMDBENCH_HARNESS_STACK_ENDPOINT_PORT=1234
+        export LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_PORT=5678
+        export LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_VLLM_PORT=9012
       fi
 
       if [[ -z $LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME ]]; then
@@ -347,6 +355,9 @@ for method in ${LLMDBENCH_DEPLOY_METHODS//,/ }; do
       fi
 
       export LLMDBENCH_HARNESS_STACK_ENDPOINT_URL="http://${LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME}:${LLMDBENCH_HARNESS_STACK_ENDPOINT_PORT}"
+
+      export LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_URL="http://${LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME}:${LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_PORT}"
+      export LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_VLLM_URL="http://${LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME}:${LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_VLLM_PORT}"
 
       announce "ℹ️ Stack Endpoint URL detected is \"$LLMDBENCH_HARNESS_STACK_ENDPOINT_URL\""
 

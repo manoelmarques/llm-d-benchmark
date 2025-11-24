@@ -419,7 +419,6 @@ class ResourceMetrics(BaseModel):
 class Metrics(BaseModel):
     """Aggregate results from benchmarking run."""
 
-    time: Time
     requests: Requests
     latency: Latency
     throughput: Throughput
@@ -436,6 +435,7 @@ class BenchmarkReport(BaseModel):
     """Version of the schema."""
     scenario: Scenario
     metrics: Metrics
+    time: Time
     metadata: Optional[Any] = None
 
     @model_validator(mode='after')
