@@ -94,6 +94,22 @@ DEFINED_CATEGORIES = [
 ]
 
 
+@dataclass
+class PodContainerInfo:
+    """Pod container info"""
+
+    name: str = ""
+    image: str = ""
+
+
+@dataclass
+class PodInfo:
+    """Pod info"""
+
+    name: str = ""
+    containers: list[PodContainerInfo] = field(default_factory=list[PodContainerInfo])
+
+
 @dataclass(frozen=True)
 class BenchmarkProcess:
     """Process details"""
@@ -333,7 +349,9 @@ class PlatformEngineScenario:
 class PlatformScenario:
     """Platform Scenario"""
 
-    engine: PlatformEngineScenario = field(default_factory=PlatformEngineScenario)
+    engines: list[PlatformEngineScenario] = field(
+        default_factory=list[PlatformEngineScenario]
+    )
 
     def dump(self) -> dict[str, Any]:
         """Convert PlatformScenario to dict.
@@ -341,7 +359,23 @@ class PlatformScenario:
         Returns:
             dict: Defined fields of PlatformScenario.
         """
-        return {"engine": self.engine.dump()}
+        dump_dict = {}
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if f.name == "engines":
+                dump_list = []
+                for engine in value:
+                    dump_list.append(engine.dump())
+                dump_dict[f.name] = dump_list
+                continue
+
+            dump_dict[f.name] = (
+                value.dump()
+                if hasattr(value, "dump") and callable(value.dump)
+                else value
+            )
+
+        return dump_dict
 
 
 @dataclass
@@ -696,7 +730,7 @@ def wake(base_url: str, timeout: float):
 
 def get_vllm_pod_info(
     v1: client.CoreV1Api, namespace: str, deployment_name: str
-) -> dict[str, str]:
+) -> PodInfo:
     """get vllm pod name"""
 
     selectors = get_deployment_selectors(namespace, deployment_name)
@@ -710,6 +744,12 @@ def get_vllm_pod_info(
     if len(pod_infos) == 0:
         raise RuntimeError(
             f"No pods found on namespace {namespace} with selector 'app={selector}'."
+        )
+
+    # return first pod info
+    if len(pod_infos[0].containers) == 0:
+        raise RuntimeError(
+            f"No pod container found on namespace {namespace} with pod name '{pod_infos[0].name}'."
         )
 
     return pod_infos[0]
@@ -734,9 +774,7 @@ def get_deployment_selectors(namespace: str, name: str) -> list[str]:
     return selectors
 
 
-def get_pod_infos(
-    v1: client.CoreV1Api, namespace: str, selector: str
-) -> list[dict[str, str]]:
+def get_pod_infos(v1: client.CoreV1Api, namespace: str, selector: str) -> list[PodInfo]:
     """get pods by selector"""
 
     pod_list = v1.list_namespaced_pod(
@@ -744,18 +782,29 @@ def get_pod_infos(
     )
     pod_infos = []
     for pod in pod_list.items:
-        image = pod.spec.containers[0].image
-        name = pod.metadata.name
-        pod_infos.append({"name": name, "image": image})
+        pod_info = PodInfo()
+        pod_info.name = pod.metadata.name
+        for container in pod.spec.containers:
+            pod_container_info = PodContainerInfo()
+            pod_container_info.name = container.name
+            pod_container_info.image = container.image
+            pod_info.containers.append(pod_container_info)
+        pod_infos.append(pod_info)
 
     return pod_infos
 
 
-def get_pod_logs(v1: client.CoreV1Api, namespace: str, pod_name: str) -> bytes:
+def get_pod_logs(
+    v1: client.CoreV1Api, namespace: str, pod_name: str, container_name: str
+) -> bytes:
     """get pod logs"""
 
     response = v1.read_namespaced_pod_log(
-        name=pod_name, namespace=namespace, pretty=False, _preload_content=False
+        name=pod_name,
+        container=container_name,
+        namespace=namespace,
+        pretty=False,
+        _preload_content=False,
     )
     return response.data
 
@@ -961,7 +1010,7 @@ def populate_benchmark_category(
     return index
 
 
-def parse_logs(logs: str) -> BenchmarkResult:
+def parse_logs(benchmark_result: BenchmarkResult, logs: str) -> None:
     """parse vllm logs"""
 
     # Strings to be searched on logging ouput in order to extract values
@@ -1009,8 +1058,6 @@ def parse_logs(logs: str) -> BenchmarkResult:
     model_took_string = " It took "
     # Sleep mode freed 69.50 GiB memory, 0.75 GiB memory is still in use.
     model_gpu_freed = "Sleep mode freed"
-
-    benchmark_result = BenchmarkResult()
 
     # load from start to get gpus scenario
     gpus_scenario_found = False
@@ -1075,9 +1122,9 @@ def parse_logs(logs: str) -> BenchmarkResult:
                 start_index += len(server_non_default_args)
                 args = line[start_index:].strip()
                 try:
-                    benchmark_result.scenario.platform.engine.args = ast.literal_eval(
-                        args
-                    )
+                    benchmark_result.scenario.platform.engines[
+                        0
+                    ].args = ast.literal_eval(args)
                 except Exception:
                     logger.exception(
                         "log args dict parsing returned error converting: %s",
@@ -1293,6 +1340,7 @@ def main():
             "LLMDBENCH_HARNESS_STACK_ENDPOINT_URL",
             "LLMDBENCH_CONTROL_WORK_DIR",
             "LLMDBENCH_VLLM_STANDALONE_VLLM_LOAD_FORMAT",
+            "LLMDBENCH_VLLM_STANDALONE_LAUNCHER",
         ]
     )
 
@@ -1300,6 +1348,8 @@ def main():
     endpoint_url = envs[1]
     control_work_dir = envs[2]
     load_format = LoadFormat.loadformat_from_value(envs[3])
+    launcher = envs[4].strip().lower() == "true"
+
     requests_dir = control_work_dir
     write_log_per_process = False
 
@@ -1329,11 +1379,14 @@ def main():
     pod_info = None
     try:
         pod_info = get_vllm_pod_info(v1, namespace, arr[0])
-        logger.info(
-            "vLLM standalone pod name: %s image: %s",
-            pod_info["name"],
-            pod_info["image"],
-        )
+        for container in pod_info.containers:
+            logger.info(
+                "vLLM standalone pod name: %s container: %s image: %s",
+                pod_info.name,
+                container.name,
+                container.image,
+            )
+
     except Exception as e:
         logger.info(
             "Skipping harness because vLLM standalone pod not found: %s", str(e)
@@ -1343,19 +1396,26 @@ def main():
     vllm_version = get_vllm_version(endpoint_url, REQUEST_TIMEOUT)
     vllm_model = get_vllm_model(endpoint_url, REQUEST_TIMEOUT)
 
-    pod_logs = get_pod_logs(v1, namespace, pod_info["name"])
-    benchmark_result = parse_logs(pod_logs.decode("utf-8"))
+    benchmark_result = BenchmarkResult()
+    benchmark_result.scenario.model.name = vllm_model
+    for container in pod_info.containers:
+        engine = PlatformEngineScenario()
+        engine.name = container.image
+        engine.version = vllm_version
+        benchmark_result.scenario.platform.engines.append(engine)
+
+    pod_logs = get_pod_logs(v1, namespace, pod_info.name, pod_info.containers[0].name)
+    parse_logs(benchmark_result, pod_logs.decode("utf-8"))
     if benchmark_result.scenario.sleep_mode:
         logger.info("Request sleep/wake")
         sleep(endpoint_url, 1, REQUEST_TIMEOUT)
         wake(endpoint_url, REQUEST_TIMEOUT)
         # get logs again with latest sleep/wake statistics
-        pod_logs = get_pod_logs(v1, namespace, pod_info["name"])
-        benchmark_result = parse_logs(pod_logs.decode("utf-8"))
+        pod_logs = get_pod_logs(
+            v1, namespace, pod_info.name, pod_info.containers[0].name
+        )
+        parse_logs(benchmark_result, pod_logs.decode("utf-8"))
 
-    benchmark_result.scenario.model.name = vllm_model
-    benchmark_result.scenario.platform.engine.name = pod_info["image"]
-    benchmark_result.scenario.platform.engine.version = vllm_version
     # if failed to extract from logs
     if benchmark_result.scenario.load_format == LoadFormat.UNKNOWN:
         logger.info("Using load format from env. variable")
@@ -1406,6 +1466,9 @@ def main():
     os.makedirs(benchmark_report_filepath, exist_ok=True)
     benchmark_report_filepath = os.path.join(benchmark_report_filepath, "result.yaml")
     convert_result(result_filepath, benchmark_report_filepath)
+
+    if launcher:
+        logger.info("benchmark launcher")
 
 
 if __name__ == "__main__":

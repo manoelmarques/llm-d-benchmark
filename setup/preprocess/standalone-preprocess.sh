@@ -23,7 +23,7 @@ if [[ ${LLMDBENCH_VLLM_STANDALONE_VLLM_LOAD_FORMAT} == "fastsafetensors" ]]; the
 elif [[ ${LLMDBENCH_VLLM_STANDALONE_VLLM_LOAD_FORMAT} == "tensorizer" ]]; then
     sudo apt update
     sudo apt install -y jq
-    pip install --root-user-action=ignore tensorizer==2.10.1
+    pip install --root-user-action=ignore tensorizer==2.12.0
     # path to save serialized file
     export LLMDBENCH_VLLM_TENSORIZER_URI="${HF_HOME}/${LLMDBENCH_VLLM_STANDALONE_MODEL}/v1/model.tensors"
     export LLMDBENCH_VLLM_STANDALONE_MODEL_LOADER_EXTRA_CONFIG=$(echo "$LLMDBENCH_VLLM_STANDALONE_MODEL_LOADER_EXTRA_CONFIG" | jq '.tensorizer_uri = env.LLMDBENCH_VLLM_TENSORIZER_URI' | tr -d '\n')

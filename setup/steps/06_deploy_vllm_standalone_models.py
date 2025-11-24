@@ -179,6 +179,7 @@ def generate_deployment_yaml(ev, model, model_label):
 
     # Generate command line options
     args = add_command_line_options(ev["vllm_standalone_args"])
+    launcher_args = add_command_line_options(ev["vllm_standalone_launcher_args"])
 
     # Generate additional environment variables
     additional_env = add_additional_env_to_yaml(ev, ev["vllm_common_envvars_to_yaml"])
@@ -190,6 +191,8 @@ def generate_deployment_yaml(ev, model, model_label):
 
     extra_volume_mounts = add_config(ev['vllm_common_extra_volume_mounts'],8)
     extra_volumes = add_config(ev['vllm_common_extra_volumes'],6)
+
+    launcher = os.environ.get("LLMDBENCH_VLLM_STANDALONE_LAUNCHER", "false").strip().lower() == "true"
 
     deployment_yaml = f"""apiVersion: apps/v1
 kind: Deployment
@@ -281,6 +284,73 @@ spec:
           mountPath: /dev/shm
         {extra_volume_mounts}
 {add_pull_secret(ev)}
+"""
+    if launcher:
+      deployment_yaml += f"""
+      - name: vllm-launcher-{model_label}
+        image: {image}
+        imagePullPolicy: Always
+        command:
+        - /bin/bash
+        - "-c"
+        args:
+{launcher_args}
+        env:
+        - name: LLMDBENCH_VLLM_STANDALONE_MODEL
+          value: "{os.environ.get('LLMDBENCH_DEPLOY_CURRENT_MODEL', '')}"
+        - name: LLMDBENCH_VLLM_STANDALONE_VLLM_LOAD_FORMAT
+          value: "{ev.get('vllm_standalone_vllm_load_format', '')}"
+        - name: LLMDBENCH_VLLM_STANDALONE_MODEL_LOADER_EXTRA_CONFIG
+          value: "{os.environ.get('LLMDBENCH_VLLM_STANDALONE_MODEL_LOADER_EXTRA_CONFIG', '{}')}"
+        - name: VLLM_LOGGING_LEVEL
+          value: "{ev.get('vllm_standalone_vllm_logging_level', '')}"
+        - name: HF_HOME
+          value: {ev.get('vllm_standalone_pvc_mountpoint', '')}
+        - name: LLMDBENCH_VLLM_COMMON_AFFINITY
+          value: "{os.environ.get('LLMDBENCH_VLLM_COMMON_AFFINITY', '')}"
+        - name: HUGGING_FACE_HUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {ev.get('vllm_common_hf_token_name', '')}
+              key: HF_TOKEN
+{additional_env}
+        ports:
+        - containerPort: {ev['vllm_standalone_launcher_inference_port']}
+        startupProbe:
+          httpGet:
+            path: /health
+            port: {ev['vllm_standalone_launcher_inference_port']}
+          failureThreshold: 200
+          initialDelaySeconds: {ev.get('vllm_common_initial_delay_probe', 60)}
+          periodSeconds: 30
+          timeoutSeconds: 5
+        livenessProbe:
+          tcpSocket:
+            port: {ev['vllm_standalone_launcher_inference_port']}
+          failureThreshold: 3
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {ev['vllm_standalone_launcher_inference_port']}
+          failureThreshold: 3
+          periodSeconds: 5
+        resources:
+          limits:
+{limits_str}
+          requests:
+{requests_str}
+        volumeMounts:
+        - name: preprocesses
+          mountPath: /setup/preprocess
+        - name: cache-volume
+          mountPath: {ev.get('vllm_standalone_pvc_mountpoint', '')}
+        - name: shm
+          mountPath: /dev/shm
+        {extra_volume_mounts}
+{add_pull_secret(ev)}
+"""
+    deployment_yaml += f"""
       volumes:
       - name: preprocesses
         configMap:
@@ -301,6 +371,8 @@ spec:
 def generate_service_yaml(ev, model, model_label):
     """Generate Kubernetes Service YAML for vLLM standalone model."""
 
+    launcher = os.environ.get("LLMDBENCH_VLLM_STANDALONE_LAUNCHER", "false").strip().lower() == "true"
+
     service_yaml = f"""apiVersion: v1
 kind: Service
 metadata:
@@ -315,6 +387,14 @@ spec:
   - name: http
     port: 80
     targetPort: {ev['vllm_common_inference_port']}
+"""
+    if launcher:
+      service_yaml += f"""
+  - name: http
+    port: 81
+    targetPort: {ev['vllm_standalone_launcher_inference_port']}
+"""
+    service_yaml += f"""
   selector:
     app: vllm-standalone-{model_label}
   type: ClusterIP
