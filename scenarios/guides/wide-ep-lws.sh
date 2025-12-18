@@ -19,13 +19,63 @@ export LLMDBENCH_DEPLOY_MODEL_LIST="deepseek-ai/DeepSeek-R1-0528"
 #export LLMDBENCH_VLLM_COMMON_PVC_STORAGE_CLASS=ocs-storagecluster-cephfs
 export LLMDBENCH_VLLM_COMMON_PVC_MODEL_CACHE_SIZE=1Ti
 
+# gateway configuration
+###### default is istio and NodePort
+# export LLMDBENCH_VLLM_MODELSERVICE_GATEWAY_CLASS_NAME=kgateway
+###### on openshift as alternative to (default) NodePort
+# export LLMDBENCH_VLLM_MODELSERVICE_GATEWAY_SERVICE_TYPE=ClusterIP
+###### if support LoadBalancer
+# export LLMDBENCH_VLLM_MODELSERVICE_GATEWAY_SERVICE_TYPE=LoadBalancer
+
 # Routing configuration (via gaie)
-export LLMDBENCH_VLLM_MODELSERVICE_GAIE_PLUGINS_CONFIGFILE=custom-plugins.yaml
+export LLMDBENCH_VLLM_MODELSERVICE_GAIE_PLUGINS_CONFIGFILE="custom-plugins.yaml"
+export LLMDBENCH_VLLM_MODELSERVICE_GAIE_CUSTOM_PLUGINS=$(mktemp)
+cat << EOF > $LLMDBENCH_VLLM_MODELSERVICE_GAIE_CUSTOM_PLUGINS
+custom-plugins.yaml: |
+  apiVersion: inference.networking.x-k8s.io/v1alpha1
+  kind: EndpointPickerConfig
+  plugins:
+  - type: prefill-header-handler
+  - type: prefill-filter
+  - type: decode-filter
+  - type: random-picker
+    parameters:
+      maxNumOfEndpoints: 1
+  - type: pd-profile-handler
+    parameters:
+      threshold: 0
+      hashBlockSize: 5
+  schedulingProfiles:
+  - name: prefill
+    plugins:
+    - pluginRef: prefill-filter
+    - pluginRef: random-picker
+  - name: decode
+    plugins:
+    - pluginRef: decode-filter
+    - pluginRef: random-picker
+EOF
+export LLMDBENCH_VLLM_MODELSERVICE_INFERENCE_POOL_PROVIDER_CONFIG=$(mktemp)
+cat << EOF > $LLMDBENCH_VLLM_MODELSERVICE_INFERENCE_POOL_PROVIDER_CONFIG
+destinationRule:
+  host: REPLACE_ENV_LLMDBENCH_DEPLOY_CURRENT_MODEL_ID_LABEL-gaie-epp
+  trafficPolicy:
+    connectionPool:
+      http:
+        http1MaxPendingRequests: 256000
+        maxRequestsPerConnection: 256000
+        http2MaxRequests: 256000
+        idleTimeout: "900s"
+      tcp:
+        maxConnections: 256000
+        maxConnectionDuration: "1800s"
+        connectTimeout: "900s"
+EOF
 
 # Routing configuration (via modelservice)
 # export LLMDBENCH_LLMD_ROUTINGSIDECAR_CONNECTOR=nixlv2 # already the default
 export LLMDBENCH_LLMD_ROUTINGSIDECAR_DEBUG_LEVEL=1
-export LLMDBENCH_LLMD_ROUTINGSIDECAR_IMAGE_TAG=v0.4.0-rc.1
+export LLMDBENCH_LLMD_ROUTINGSIDECAR_IMAGE_TAG=v0.4.0
 
 export LLMDBENCH_LLMD_IMAGE_TAG=v0.4.0
 
@@ -124,10 +174,10 @@ export LLMDBENCH_VLLM_MODELSERVICE_PREFILL_NETWORK_NR=1
 export LLMDBENCH_VLLM_MODELSERVICE_PREFILL_EPHEMERAL_STORAGE_NR=1Ti
 export LLMDBENCH_VLLM_MODELSERVICE_PREFILL_INFERENCE_PORT=8000
 export LLMDBENCH_VLLM_MODELSERVICE_PREFILL_MODEL_COMMAND=custom
-export LLMDBENCH_VLLM_MODELSERVICE_DECODE_PREPROCESS="python3 /setup/preprocess/set_llmdbench_environment.py; source \$HOME/llmdbench_env.sh"
+# export LLMDBENCH_VLLM_MODELSERVICE_DECODE_PREPROCESS="python3 /setup/preprocess/set_llmdbench_environment.py; source \$HOME/llmdbench_env.sh"
 export LLMDBENCH_VLLM_MODELSERVICE_PREFILL_EXTRA_ARGS=$(mktemp)
 cat << EOF > $LLMDBENCH_VLLM_MODELSERVICE_PREFILL_EXTRA_ARGS
-exec vllm serve \
+find /dev/shm -type f -delete; START_RANK=\$(( \${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL )); exec vllm serve \
   REPLACE_ENV_LLMDBENCH_DEPLOY_CURRENT_MODEL \
   --port 8000 \
   --trust-remote-code \
@@ -234,13 +284,12 @@ export LLMDBENCH_VLLM_MODELSERVICE_DECODE_NETWORK_NR=1
 export LLMDBENCH_VLLM_MODELSERVICE_DECODE_EPHEMERAL_STORAGE_NR=1Ti
 export LLMDBENCH_VLLM_MODELSERVICE_DECODE_INFERENCE_PORT=8200
 export LLMDBENCH_VLLM_MODELSERVICE_DECODE_MODEL_COMMAND=custom
-export LLMDBENCH_VLLM_MODELSERVICE_DECODE_PREPROCESS="python3 /setup/preprocess/set_llmdbench_environment.py; source \$HOME/llmdbench_env.sh"
+# export LLMDBENCH_VLLM_MODELSERVICE_DECODE_PREPROCESS="python3 /setup/preprocess/set_llmdbench_environment.py; source \$HOME/llmdbench_env.sh"
 export LLMDBENCH_VLLM_MODELSERVICE_DECODE_EXTRA_ARGS=$(mktemp)
-cat << EOF > $LLMDBENCH_VLLM_MODELSERVICE_DECODE_EXTRA_ARGS
 # Clear /dev/shm on start to prevent running out of space when crashes occur
 # https://github.com/llm-d/llm-d/issues/352
-find /dev/shm -type f -delete; \
-exec vllm serve \
+cat << EOF > $LLMDBENCH_VLLM_MODELSERVICE_DECODE_EXTRA_ARGS
+find /dev/shm -type f -delete; START_RANK=\$(( \${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL )); exec vllm serve \
   REPLACE_ENV_LLMDBENCH_DEPLOY_CURRENT_MODEL \
   --port 8200 \
   --trust-remote-code \

@@ -21,7 +21,7 @@ from functions import (
 )
 
 def provider(provider: str) -> str:
-    if provider == "gke" or provider == "openshift-default" :
+    if provider == "gke" or provider == "openshift-default" or provider == "istio":
         return provider
     return "none"
 
@@ -125,6 +125,9 @@ def main():
         secretKeyRef:
           name: {ev["vllm_common_hf_token_name"]}
           key: {ev["vllm_common_hf_token_key"]}"""
+                
+            gaie_provider = provider(ev['vllm_modelservice_gateway_class_name'])
+            ip_provider_config = ev.get("vllm_modelservice_inference_pool_provider_config", "")
 
             # Generate GAIE values YAML content
             gaie_values_content = f"""inferenceExtension:
@@ -155,8 +158,16 @@ inferencePool:
     matchLabels:
       llm-d.ai/inferenceServing: "true"
       llm-d.ai/model: {model_id_label}
+"""
+            if ip_provider_config != "":
+                gaie_values_content = f"""{gaie_values_content}
+  provider:
+    {add_config(ip_provider_config, 6, f"{ev['vllm_modelservice_gateway_class_name']}:").lstrip()}
+"""
+            if gaie_provider != "none":
+                gaie_values_content = f"""{gaie_values_content}
 provider:
-  name: {provider(ev['vllm_modelservice_gateway_class_name'])}
+  name: {gaie_provider}
 """
             # Write GAIE values file
             gaie_values_file = helm_dir / "gaie-values.yaml"
@@ -218,7 +229,7 @@ provider:
 
             model_number += 1
 
-        announce("✅ Completed model deployment")
+        announce("✅ Completed GAIE deployment")
     else:
         announce(f"⏭️ Environment types are \"{ev['deploy_methods']}\". Skipping this step.")
 
