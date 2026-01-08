@@ -1,11 +1,7 @@
-#!/usr/bin/env python3
+"""
+Convert application native output formats into a Benchmark Report.
+"""
 
-# This script imports data from a benchmark run in llm-d-benchmark using any
-# supported harness, and converts the results into a data file with a standard
-# benchmark report format. This format can then be used for post processing
-# that is not specialized to a particular harness.
-
-import argparse
 import base64
 import datetime
 import os
@@ -16,42 +12,9 @@ import yaml
 
 import numpy as np
 
-# TODO fix this during refactor after repository has been converted into
-# full Python.
-# Hack to ensure schema can be imported from harness pod or config explorer.
-try:
-    from schema import BenchmarkReport, Units, WorkloadGenerator, HostType
-except ImportError:
-    from config_explorer.schema import BenchmarkReport, Units, WorkloadGenerator
-
-
-def check_file(file_path: str) -> None:
-    """Make sure regular file exists.
-
-    Args:
-        file_path (str): File to check.
-    """
-    if not os.path.exists(file_path):
-        sys.stderr.write('File does not exist: %s\n' % file_path)
-        exit(2)
-    if not os.path.isfile(file_path):
-        sys.stderr.write('Not a regular file: %s\n' % file_path)
-        exit(2)
-
-
-def import_yaml(file_path: str) -> dict[Any, Any]:
-    """Import a JSON/YAML file as a dict.
-
-    Args:
-        file_path (str): Path to JSON/YAML file.
-
-    Returns:
-        dict: Imported data.
-    """
-    check_file(file_path)
-    with open(file_path, 'r', encoding='UTF-8') as file:
-        data = yaml.safe_load(file)
-    return data
+from .base import BenchmarkReport
+from .core import check_file, import_yaml, load_benchmark_report
+from .schema_v0_1 import Units, WorkloadGenerator, HostType
 
 
 def import_csv_with_header(file_path: str) -> dict[str, list[Any]]:
@@ -272,23 +235,6 @@ def _get_llmd_benchmark_envars() -> dict:
     return {}
 
 
-def import_benchmark_report(br_file: str) -> BenchmarkReport:
-    """Import benchmark report, and supplement with additional data from llm-d-benchmark run.
-
-    Args:
-        br_file (str): Benchmark report file to import.
-
-    Returns:
-        BenchmarkReport: Imported benchmark report supplemented with run data.
-    """
-    check_file(br_file)
-
-    # Import benchmark report as a dict following the schema of BenchmarkReport
-    br_dict = import_yaml(br_file)
-
-    return BenchmarkReport(**br_dict)
-
-
 def _vllm_timestamp_to_epoch(date_str: str) -> int:
     """Convert timestamp from vLLM benchmark into seconds from Unix epoch.
 
@@ -339,6 +285,7 @@ def import_vllm_benchmark(results_file: str) -> BenchmarkReport:
     br_dict = _get_llmd_benchmark_envars()
     # Append to that dict the data from vLLM benchmark.
     update_dict(br_dict, {
+        "version": "0.1",
         "scenario": {
             "model": {"name": results.get('model_id')},
             "load": {
@@ -437,7 +384,7 @@ def import_vllm_benchmark(results_file: str) -> BenchmarkReport:
         },
     })
 
-    return BenchmarkReport(**br_dict)
+    return load_benchmark_report(br_dict)
 
 
 def import_guidellm(results_file: str, index: int = 0) -> BenchmarkReport:
@@ -461,6 +408,7 @@ def import_guidellm(results_file: str, index: int = 0) -> BenchmarkReport:
     br_dict = _get_llmd_benchmark_envars()
     # Append to that dict the data from GuideLLM
     update_dict(br_dict, {
+        "version": "0.1",
         "scenario": {
             "model": {"name": data["args"].get("model", "unknown")},
             "load": {
@@ -606,7 +554,7 @@ def import_guidellm(results_file: str, index: int = 0) -> BenchmarkReport:
         },
     })
 
-    return BenchmarkReport(**br_dict)
+    return load_benchmark_report(br_dict)
 
 
 def _get_num_buidellm_runs(results_file: str) -> int:
@@ -674,6 +622,7 @@ def import_inference_perf(results_file: str) -> BenchmarkReport:
         model_name = "unknown"
     # Append to that dict the data from Inference Perf
     update_dict(br_dict, {
+        "version": "0.1",
         "scenario": {
             "model": {"name": model_name},
             "load": {
@@ -823,7 +772,7 @@ def import_inference_perf(results_file: str) -> BenchmarkReport:
         },
     })
 
-    return BenchmarkReport(**br_dict)
+    return load_benchmark_report(br_dict)
 
 
 def import_inference_max(results_file: str) -> BenchmarkReport:
@@ -845,6 +794,7 @@ def import_inference_max(results_file: str) -> BenchmarkReport:
     br_dict = _get_llmd_benchmark_envars()
     # Append to that dict the data from InferenceMAX benchmark.
     update_dict(br_dict, {
+        "version": "0.1",
         "scenario": {
             "model": {"name": results.get('model_id')},
             "load": {
@@ -943,7 +893,7 @@ def import_inference_max(results_file: str) -> BenchmarkReport:
         },
     })
 
-    return BenchmarkReport(**br_dict)
+    return load_benchmark_report(br_dict)
 
 
 def import_nop(results_file: str) -> BenchmarkReport:
@@ -985,6 +935,7 @@ def import_nop(results_file: str) -> BenchmarkReport:
     br_dict = _get_llmd_benchmark_envars()
 
     results_dict = {
+        "version": "0.1",
         "scenario": {
             "model": {
                 "name": results["scenario"]["model"]["name"]
@@ -1169,100 +1120,4 @@ def import_nop(results_file: str) -> BenchmarkReport:
 
     update_dict(br_dict, results_dict)
 
-    return BenchmarkReport(**br_dict)
-
-
-if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser(
-        description='Convert benchmark run data to standard benchmark report format.')
-    parser.add_argument(
-        'results_file',
-        type=str,
-        help='Results file to convert.')
-    parser.add_argument(
-        'output_file',
-        type=str,
-        default=None,
-        nargs='?',
-        help='Output file for benchark report.')
-    parser.add_argument(
-        '-f', '--force',
-        action=argparse.BooleanOptionalAction,
-        help='Write to output file even if it already exists.')
-    parser.add_argument(
-        '-w', '--workload-generator',
-        type=str,
-        default=WorkloadGenerator.VLLM_BENCHMARK,
-        help=f'Workload generator used, one of: {str([member.value for member in WorkloadGenerator])[1:-1]}')
-    parser.add_argument(
-        '-i',
-        '--index',
-        type=int,
-        default=None,
-        help='Benchmark index to import, for results files containing multiple runs. Default behavior creates benchmark reports for all runs.')
-
-    args = parser.parse_args()
-    if args.output_file and os.path.exists(
-            args.output_file) and not args.force:
-        sys.stderr.write('Output file already exists: %s\n' % args.output_file)
-        sys.exit(1)
-
-    match args.workload_generator:
-        case WorkloadGenerator.GUIDELLM:
-            if args.index:
-                # Generate benchmark report for a specific index
-                if args.output_file:
-                    import_guidellm(
-                        args.results_file,
-                        args.index).export_yaml(
-                        args.output_file)
-                else:
-                    import_guidellm(args.results_file, args.index).print_yaml()
-            else:
-                br_list = import_guidellm_all(args.results_file)
-                # Generate reports for all runs
-                for ii, br in enumerate(br_list):
-                    if args.output_file:
-                        # Create a benchmark report file
-                        fname, ext = os.path.splitext(args.output_file)
-                        output_file = f'{fname}_{ii}{ext}'
-                        if os.path.exists(output_file) and not args.force:
-                            sys.stderr.write(
-                                'Output file already exists: %s\n' %
-                                output_file)
-                            sys.exit(1)
-                        br.export_yaml(output_file)
-                    else:
-                        # Don't create a file, just print to stdout
-                        print(f'# Benchmark {ii + 1} of {len(br_list)}')
-                        br.print_yaml()
-        case WorkloadGenerator.INFERENCE_PERF:
-            if args.output_file:
-                import_inference_perf(
-                    args.results_file).export_yaml(args.output_file)
-            else:
-                import_inference_perf(args.results_file).print_yaml()
-        case WorkloadGenerator.VLLM_BENCHMARK:
-            if args.output_file:
-                import_vllm_benchmark(
-                    args.results_file).export_yaml(args.output_file)
-            else:
-                import_vllm_benchmark(args.results_file).print_yaml()
-        case WorkloadGenerator.INFERENCE_MAX:
-            if args.output_file:
-                import_inference_max(
-                    args.results_file).export_yaml(args.output_file)
-            else:
-                import_inference_max(args.results_file).print_yaml()
-        case WorkloadGenerator.NOP:
-            if args.output_file:
-                import_nop(args.results_file).export_yaml(args.output_file)
-            else:
-                import_nop(args.results_file).print_yaml()
-        case _:
-            sys.stderr.write('Unsupported workload generator: %s\n' %
-                             args.workload_generator)
-            sys.stderr.write('Must be one of: %s\n' %
-                             str([wg.value for wg in WorkloadGenerator])[1:-1])
-            sys.exit(1)
+    return load_benchmark_report(br_dict)

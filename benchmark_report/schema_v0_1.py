@@ -1,13 +1,14 @@
-#!/usr/bin/env python3
+"""
+Benchmark report v0.1
+"""
 
 from enum import StrEnum, auto
-import json
 from operator import attrgetter
 from typing import Optional, Any
 
 from pydantic import BaseModel, model_validator
-import yaml
 
+from .core import BenchmarkReport
 
 # BenchmarkReport schema version
 VERSION = '0.1'
@@ -41,7 +42,7 @@ class HostAccelerator(BaseModel):
 
 class HostType(StrEnum):
     """
-    Enumeration of supported workload generators
+    Enumeration of host types.
 
     Attributes
         REPLICA: str
@@ -429,7 +430,7 @@ class Metrics(BaseModel):
     metadata: Optional[Any] = None
 
 
-class BenchmarkReport(BaseModel):
+class BenchmarkReportV01(BenchmarkReport):
     """Base class for a benchmark report."""
 
     version: str = VERSION
@@ -493,60 +494,3 @@ class BenchmarkReport(BaseModel):
             exclude_none=True,
             by_alias=True,
         )
-
-    def export_json(self, filename) -> None:
-        """Save BenchmarkReport to JSON file.
-
-        Args:
-            filename: File to save BenchmarkReport to.
-        """
-        with open(filename, 'w') as file:
-            json.dump(self.dump(), file, indent=2)
-
-    def export_yaml(self, filename) -> None:
-        """Save BenchmarkReport to YAML file.
-
-        Args:
-            filename: File to save BenchmarkReport to.
-        """
-        with open(filename, 'w') as file:
-            yaml.dump(self.dump(), file, indent=2)
-
-    def print_json(self) -> None:
-        """Print BenchmarkReport as JSON."""
-        print(
-            json.dumps(self.dump(), indent=2)
-        )
-
-    def print_yaml(self) -> None:
-        """Print BenchmarkReport as YAML."""
-        print(
-            yaml.dump(self.dump(), indent=2)
-        )
-
-
-def make_json_schema() -> str:
-    """
-    Create a JSON schema for the benchmark report.
-
-    Returns:
-        str: JSON schema of benchmark report.
-    """
-    return json.dumps(BenchmarkReport.model_json_schema(), indent=2)
-
-
-def create_from_str(yaml_str: str) -> BenchmarkReport:
-    """
-    Create a BenchmarkReport instance from a JSON/YAML string.
-
-    Args:
-        yaml_str (str): JSON/YAML string to import.
-
-    Returns:
-        BenchmarkReport: Instance with values from string.
-    """
-    return BenchmarkReport(**yaml.safe_load(yaml_str))
-
-# If this is executed directly, print JSON schema.
-if __name__ == "__main__":
-    print(make_json_schema())
