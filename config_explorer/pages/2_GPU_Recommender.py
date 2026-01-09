@@ -224,8 +224,35 @@ if run_analysis:
             st.success("✅ Analysis complete!")
 
         except Exception as e:
-            st.error(f"❌ Error running analysis: {str(e)}")
-            st.exception(e)
+            # Clear any previous results from session state
+            st.session_state.recommendation_results = None
+            st.session_state.failed_gpus = None
+            st.session_state.recommender_instance = None
+            st.session_state.recommender_params = None
+
+            error_str = str(e).lower()
+
+            # Check for gated model errors
+            if "gated" in error_str or "401" in error_str or "403" in error_str or "unauthorized" in error_str:
+                st.error("🔒 **This model is gated and requires authentication**")
+                st.info("""
+                **To access gated models:**
+
+                1. **Request access** to the model on [HuggingFace](https://huggingface.co/)
+                2. **Generate a token** from your [HuggingFace settings page](https://huggingface.co/settings/tokens)
+                3. **Set the environment variable** before running the application:
+                   ```bash
+                   export HF_TOKEN=your_token_here
+                   ```
+                4. **Restart** the Streamlit application
+
+                **Popular gated models:** Llama 3, Gemma, Mistral, etc.
+                """)
+                with st.expander("🔍 View detailed error"):
+                    st.exception(e)
+            else:
+                st.error(f"❌ Error running analysis: {str(e)}")
+                st.exception(e)
 
 # Display results if available
 if st.session_state.recommendation_results is not None:

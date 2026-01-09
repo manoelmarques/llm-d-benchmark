@@ -44,8 +44,9 @@ class GPURecommender:
             max_latency: Maximum end-to-end latency constraint (s)
         """
 
-        # Read HF Token
+        # Read HF Token from environment variable
         hf_token = os.getenv("HF_TOKEN", None)
+
         self.input_len = input_len
         self.output_len = output_len
         self.model_id = model_id
