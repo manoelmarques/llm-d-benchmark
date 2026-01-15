@@ -4,123 +4,37 @@ Benchmark report v0.2
 
 import datetime
 from typing import Any, Annotated
+from enum import StrEnum, auto
 
-from pydantic import BaseModel, ConfigDict, Discriminator
+from pydantic import BaseModel, ConfigDict, Discriminator, Field, model_validator
 
-from .base import BenchmarkReport
-from .schema_v0_2_components import *
+from .base import (
+    BenchmarkReport,
+    Units,
+    UNITS_QUANTITY,
+    UNITS_TIME,
+    UNITS_GEN_LATENCY,
+    UNITS_GEN_THROUGHPUT,
+    UNITS_REQUEST_THROUGHPUT,
+)
+from .schema_v0_2_components import COMPONENTS
 
 
 # BenchmarkReport schema version
-VERSION = '0.2'
+VERSION = "0.2"
 
 # Default model_config to apply to Pydantic classes
 MODEL_CONFIG = ConfigDict(
-    extra="forbid", # Do not allow fields that are not part of this schema
-    use_attribute_docstrings=True, # Use docstrings for JSON schema
-    populate_by_name=False, # Must use alias name, not internal field name
-    validate_assignment=True, # Validate field assignment after init
+    extra="forbid",  # Do not allow fields that are not part of this schema
+    use_attribute_docstrings=True,  # Use docstrings for JSON schema
+    populate_by_name=False,  # Must use alias name, not internal field name
+    validate_assignment=True,  # Validate field assignment after init
 )
-
-###############################################################################
-# Units
-###############################################################################
-
-class Units(StrEnum):
-    """
-    Enumeration of units
-
-    Attributes
-        COUNT: str
-            Count
-        MS: str
-            Milliseconds
-        S: str
-            Seconds
-        MB: str
-            Megabytes
-        GB: str
-            Gigabytes
-        TB: str
-            Terabytes
-        MIB: str
-            Mebibytes
-        GIB: str
-            Gibibytes
-        TIB: str
-            Tebibytes
-        MBIT_PER_S: str
-            Megabbits per second
-        GBIT_PER_S: str
-            Gigabits per second
-        TBIT_PER_S: str
-            Terabits per second
-        MB_PER_S: str
-            Megabytes per second
-        GB_PER_S: str
-            Gigabytes per second
-        TB_PER_S: str
-            Terabytes per second
-        GIB_PER_S: str
-            GiB per second
-        MS_PER_TOKEN: str
-            Milliseconds per token
-        S_PER_TOKEN: str
-            Seconds per token
-        TOKEN_PER_S: str
-            Tokens per second
-        WATTS: str
-            Watts
-    """
-
-    # Quantity
-    COUNT = auto()
-    # Portion
-    PERCENT = auto()
-    FRACTION = auto()
-    # Time
-    MS = auto()
-    S = auto()
-    # Memory
-    MB = 'MB'
-    GB = 'GB'
-    TB = 'TB'
-    MIB = 'MiB'
-    GIB = 'GiB'
-    TIB = 'TiB'
-    # Bandwidth
-    MBIT_PER_S = 'Mbit/s'
-    GBIT_PER_S = 'Gbit/s'
-    TBIT_PER_S = 'Tbit/s'
-    GIB_PER_S = "GiB/s"
-
-    MB_PER_S = 'MB/s'
-    GB_PER_S = 'GB/s'
-    TB_PER_S = 'TB/s'
-    # Generation latency
-    MS_PER_TOKEN = 'ms/token'
-    S_PER_TOKEN = 's/token'
-    # Generation throughput
-    TOKEN_PER_S = 'tokens/s'
-    # Request throughput
-    QUERY_PER_S = 'queries/s'
-    # Power
-    WATTS = "Watts"
-
-# Lists of compatible units
-UNITS_QUANTITY = [Units.COUNT]
-UNITS_PORTION = [Units.PERCENT, Units.FRACTION]
-UNITS_TIME = [Units.MS, Units.S]
-UNITS_MEMORY = [Units.MB, Units.GB, Units.TB, Units.MIB, Units.GIB, Units.TIB]
-UNITS_BANDWIDTH = [Units.MBIT_PER_S, Units.GBIT_PER_S, Units.TBIT_PER_S, Units.MB_PER_S, Units.GB_PER_S, Units.TB_PER_S]
-UNITS_GEN_LATENCY = [Units.MS_PER_TOKEN, Units.S_PER_TOKEN]
-UNITS_GEN_THROUGHPUT = [Units.TOKEN_PER_S]
-UNITS_REQUEST_THROUGHPUT = [Units.QUERY_PER_S]
-UNITS_POWER = [Units.WATTS]
 
 ###############################################################################
 # Stack details
 ###############################################################################
+
 
 class ComponentMetadata(BaseModel):
     """Component metadata."""
@@ -165,7 +79,7 @@ class Component(BaseModel):
     """Component configuration in native format."""
 
     @model_validator(mode="before")
-    def inject_kind(cls, data):
+    def inject_kind(self, data):
         """Copy metadata.kind to standardized.kind so discriminator works."""
         # We need a Discriminator to select between different classes defining
         # the schema of the "standardized" field of a component. What class is
@@ -197,6 +111,7 @@ class Component(BaseModel):
 ###############################################################################
 # Experimental workload
 ###############################################################################
+
 
 class LoadMetadata(BaseModel):
     """Workload metadata."""
@@ -317,12 +232,12 @@ class LoadStandardized(BaseModel):
     concurrency: int | float | None = Field(None, ge=1)
     """Request concurrency."""
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_concurrency(self):
         """Concurrency must be an integer, unless value is infinite."""
         if isinstance(self.concurrency, float):
-            if self.concurrency != float('inf'):
-                raise ValueError('concurrency must be integer or .inf')
+            if self.concurrency != float("inf"):
+                raise ValueError("concurrency must be integer or .inf")
         return self
 
 
@@ -338,9 +253,11 @@ class LoadNative(BaseModel):
     config: Any | None = None
     """Configuration file details."""
 
-#------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
 # Root for load
-#------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+
 
 class Load(BaseModel):
     """Experimental workload details."""
@@ -354,13 +271,15 @@ class Load(BaseModel):
     native: LoadNative
     """Workload generator configuration in native format."""
 
+
 ###############################################################################
 # Request-level metrics
 ###############################################################################
 
-#------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Aggregate request performance
-#------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+
 
 class Statistics(BaseModel):
     """Statistical information about a property."""
@@ -375,7 +294,7 @@ class Statistics(BaseModel):
     p5: float | int | None = None
     p10: float | int | None = None
     p25: float | int | None = None
-    p50: float | int | None = None # This is the same as median
+    p50: float | int | None = None  # This is the same as median
     p75: float | int | None = None
     p90: float | int | None = None
     p95: float | int | None = None
@@ -400,17 +319,17 @@ class AggregateRequests(BaseModel):
     output_length: Statistics | None = None
     """Output sequence length."""
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_units(self):
         if self.input_length and self.input_length.units not in UNITS_QUANTITY:
             raise ValueError(
                 f'Invalid units "{self.input_length.units}", must be one of:'
-                f' {" ".join(UNITS_QUANTITY)}'
+                f" {' '.join(UNITS_QUANTITY)}"
             )
         if self.output_length and self.output_length.units not in UNITS_QUANTITY:
             raise ValueError(
                 f'Invalid units "{self.output_length.units}", must be one of:'
-                f' {" ".join(UNITS_QUANTITY)}'
+                f" {' '.join(UNITS_QUANTITY)}"
             )
         return self
 
@@ -446,28 +365,45 @@ class AggregateLatency(BaseModel):
     request_latency: Statistics | None = None
     """End-to-end request latency."""
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_units(self):
-        if self.time_to_first_token and self.time_to_first_token.units not in UNITS_TIME:
+        if (
+            self.time_to_first_token
+            and self.time_to_first_token.units not in UNITS_TIME
+        ):
             raise ValueError(
                 f'Invalid units "{self.time_to_first_token.units}", must be'
-                f' one of: {" ".join(UNITS_TIME)}')
-        if self.normalized_time_per_output_token and self.normalized_time_per_output_token.units not in UNITS_GEN_LATENCY:
+                f" one of: {' '.join(UNITS_TIME)}"
+            )
+        if (
+            self.normalized_time_per_output_token
+            and self.normalized_time_per_output_token.units not in UNITS_GEN_LATENCY
+        ):
             raise ValueError(
                 f'Invalid units "{self.normalized_time_per_output_token.units}"'
-                f', must be one of: {" ".join(UNITS_GEN_LATENCY)}')
-        if self.time_per_output_token and self.time_per_output_token.units not in UNITS_GEN_LATENCY:
+                f", must be one of: {' '.join(UNITS_GEN_LATENCY)}"
+            )
+        if (
+            self.time_per_output_token
+            and self.time_per_output_token.units not in UNITS_GEN_LATENCY
+        ):
             raise ValueError(
                 f'Invalid units "{self.time_per_output_token.units}", must be'
-                f' one of: {" ".join(UNITS_GEN_LATENCY)}')
-        if self.inter_token_latency and self.inter_token_latency.units not in UNITS_GEN_LATENCY:
+                f" one of: {' '.join(UNITS_GEN_LATENCY)}"
+            )
+        if (
+            self.inter_token_latency
+            and self.inter_token_latency.units not in UNITS_GEN_LATENCY
+        ):
             raise ValueError(
                 f'Invalid units "{self.inter_token_latency.units}", must be'
-                f' one of: {" ".join(UNITS_GEN_LATENCY)}')
+                f" one of: {' '.join(UNITS_GEN_LATENCY)}"
+            )
         if self.request_latency and self.request_latency.units not in UNITS_TIME:
             raise ValueError(
                 f'Invalid units "{self.request_latency.units}", must be'
-                f' one of: {" ".join(UNITS_TIME)}')
+                f" one of: {' '.join(UNITS_TIME)}"
+            )
         return self
 
 
@@ -482,27 +418,43 @@ class AggregateThroughput(BaseModel):
     """Output token rate."""
     total_token_rate: Statistics | None = None
     """Total token rate (input + output)."""
-    requests_rate: Statistics | None = None
+    request_rate: Statistics | None = None
     """Request (query) processing rate."""
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_units(self):
-        if self.input_token_rate and self.input_token_rate.units not in UNITS_GEN_THROUGHPUT:
+        if (
+            self.input_token_rate
+            and self.input_token_rate.units not in UNITS_GEN_THROUGHPUT
+        ):
             raise ValueError(
                 f'Invalid units "{self.input_token_rate.units}", must be'
-                f' one of: {" ".join(UNITS_GEN_THROUGHPUT)}')
-        if self.output_token_rate and self.output_token_rate.units not in UNITS_GEN_THROUGHPUT:
+                f" one of: {' '.join(UNITS_GEN_THROUGHPUT)}"
+            )
+        if (
+            self.output_token_rate
+            and self.output_token_rate.units not in UNITS_GEN_THROUGHPUT
+        ):
             raise ValueError(
                 f'Invalid units "{self.output_token_rate.units}"'
-                f', must be one of: {" ".join(UNITS_GEN_THROUGHPUT)}')
-        if self.total_token_rate and self.total_token_rate.units not in UNITS_GEN_THROUGHPUT:
+                f", must be one of: {' '.join(UNITS_GEN_THROUGHPUT)}"
+            )
+        if (
+            self.total_token_rate
+            and self.total_token_rate.units not in UNITS_GEN_THROUGHPUT
+        ):
             raise ValueError(
                 f'Invalid units "{self.total_token_rate.units}", must be'
-                f' one of: {" ".join(UNITS_GEN_THROUGHPUT)}')
-        if self.requests_rate and self.requests_rate.units not in UNITS_REQUEST_THROUGHPUT:
+                f" one of: {' '.join(UNITS_GEN_THROUGHPUT)}"
+            )
+        if (
+            self.request_rate
+            and self.request_rate.units not in UNITS_REQUEST_THROUGHPUT
+        ):
             raise ValueError(
-                f'Invalid units "{self.requests_rate.units}", must be'
-                f' one of: {" ".join(UNITS_REQUEST_THROUGHPUT)}')
+                f'Invalid units "{self.request_rate.units}", must be'
+                f" one of: {' '.join(UNITS_REQUEST_THROUGHPUT)}"
+            )
         return self
 
 
@@ -518,9 +470,11 @@ class AggregateRequestPerformance(BaseModel):
     throughput: AggregateThroughput | None = None
     """Aggregate response throughput performance metrics."""
 
-#------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
 # Time series request performance
-#------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+
 
 class TimeSeriesPoint(BaseModel):
     """Time series data point."""
@@ -540,7 +494,7 @@ class TimeSeriesPoint(BaseModel):
     p5: float | int | None = None
     p10: float | int | None = None
     p25: float | int | None = None
-    p50: float | int | None = None # This is the same as median
+    p50: float | int | None = None  # This is the same as median
     p75: float | int | None = None
     p90: float | int | None = None
     p95: float | int | None = None
@@ -576,28 +530,45 @@ class TimeSeriesLatency(BaseModel):
     request_latency: TimeSeriesData | None = None
     """End-to-end request latency."""
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_units(self):
-        if self.time_to_first_token and self.time_to_first_token.units not in UNITS_TIME:
+        if (
+            self.time_to_first_token
+            and self.time_to_first_token.units not in UNITS_TIME
+        ):
             raise ValueError(
                 f'Invalid units "{self.time_to_first_token.units}", must be'
-                f' one of: {" ".join(UNITS_TIME)}')
-        if self.normalized_time_per_output_token and self.normalized_time_per_output_token.units not in UNITS_GEN_LATENCY:
+                f" one of: {' '.join(UNITS_TIME)}"
+            )
+        if (
+            self.normalized_time_per_output_token
+            and self.normalized_time_per_output_token.units not in UNITS_GEN_LATENCY
+        ):
             raise ValueError(
                 f'Invalid units "{self.normalized_time_per_output_token.units}"'
-                f', must be one of: {" ".join(UNITS_GEN_LATENCY)}')
-        if self.time_per_output_token and self.time_per_output_token.units not in UNITS_GEN_LATENCY:
+                f", must be one of: {' '.join(UNITS_GEN_LATENCY)}"
+            )
+        if (
+            self.time_per_output_token
+            and self.time_per_output_token.units not in UNITS_GEN_LATENCY
+        ):
             raise ValueError(
                 f'Invalid units "{self.time_per_output_token.units}", must be'
-                f' one of: {" ".join(UNITS_GEN_LATENCY)}')
-        if self.inter_token_latency and self.inter_token_latency.units not in UNITS_GEN_LATENCY:
+                f" one of: {' '.join(UNITS_GEN_LATENCY)}"
+            )
+        if (
+            self.inter_token_latency
+            and self.inter_token_latency.units not in UNITS_GEN_LATENCY
+        ):
             raise ValueError(
                 f'Invalid units "{self.inter_token_latency.units}", must be'
-                f' one of: {" ".join(UNITS_GEN_LATENCY)}')
+                f" one of: {' '.join(UNITS_GEN_LATENCY)}"
+            )
         if self.request_latency and self.request_latency.units not in UNITS_TIME:
             raise ValueError(
                 f'Invalid units "{self.request_latency.units}", must be'
-                f' one of: {" ".join(UNITS_TIME)}')
+                f" one of: {' '.join(UNITS_TIME)}"
+            )
         return self
 
 
@@ -617,24 +588,40 @@ class TimeSeriesThroughput(BaseModel):
     request_rate: TimeSeriesData | None = None
     """Request (query) processing rate."""
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_units(self):
-        if self.input_token_rate and self.input_token_rate.units not in UNITS_GEN_THROUGHPUT:
+        if (
+            self.input_token_rate
+            and self.input_token_rate.units not in UNITS_GEN_THROUGHPUT
+        ):
             raise ValueError(
                 f'Invalid units "{self.input_token_rate.units}", must be'
-                f' one of: {" ".join(UNITS_GEN_THROUGHPUT)}')
-        if self.output_token_rate and self.output_token_rate.units not in UNITS_GEN_THROUGHPUT:
+                f" one of: {' '.join(UNITS_GEN_THROUGHPUT)}"
+            )
+        if (
+            self.output_token_rate
+            and self.output_token_rate.units not in UNITS_GEN_THROUGHPUT
+        ):
             raise ValueError(
                 f'Invalid units "{self.output_token_rate.units}"'
-                f', must be one of: {" ".join(UNITS_GEN_THROUGHPUT)}')
-        if self.total_token_rate and self.total_token_rate.units not in UNITS_GEN_THROUGHPUT:
+                f", must be one of: {' '.join(UNITS_GEN_THROUGHPUT)}"
+            )
+        if (
+            self.total_token_rate
+            and self.total_token_rate.units not in UNITS_GEN_THROUGHPUT
+        ):
             raise ValueError(
                 f'Invalid units "{self.total_token_rate.units}", must be'
-                f' one of: {" ".join(UNITS_GEN_THROUGHPUT)}')
-        if self.request_rate and self.request_rate.units not in UNITS_REQUEST_THROUGHPUT:
+                f" one of: {' '.join(UNITS_GEN_THROUGHPUT)}"
+            )
+        if (
+            self.request_rate
+            and self.request_rate.units not in UNITS_REQUEST_THROUGHPUT
+        ):
             raise ValueError(
                 f'Invalid units "{self.request_rate.units}", must be'
-                f' one of: {" ".join(UNITS_REQUEST_THROUGHPUT)}')
+                f" one of: {' '.join(UNITS_REQUEST_THROUGHPUT)}"
+            )
         return self
 
 
@@ -648,9 +635,11 @@ class TimeSeriesRequestPerformance(BaseModel):
     throughput: TimeSeriesThroughput | None = None
     """Time series throughput metrics."""
 
-#------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
 # Root for request performance
-#------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+
 
 class RequestPerformance(BaseModel):
     """Request-level performance metrics."""
@@ -662,24 +651,28 @@ class RequestPerformance(BaseModel):
     time_series: TimeSeriesRequestPerformance | None = None
     """Time series metrics."""
 
+
 ###############################################################################
 # Observability metrics
 ###############################################################################
 
 
-#------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Root for observability
-#------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+
 
 class Observability(BaseModel):
     """Observability metrics."""
 
     model_config = MODEL_CONFIG.copy()
-    model_config["extra"] = "allow" # TODO keep as permissive until schema defined
+    model_config["extra"] = "allow"  # TODO keep as permissive until schema defined
+
 
 ###############################################################################
 # Benchmark Report top-level classes
 ###############################################################################
+
 
 class RunTime(BaseModel):
     """Time details of experiment."""
@@ -699,12 +692,14 @@ class Run(BaseModel):
 
     model_config = MODEL_CONFIG.copy()
 
-    uid: str | None = None
+    uid: str
     """Unique ID for this specific benchmark report."""
     eid: str | None = None
     """Experiment ID, common across benchmark reports from a particular experiment."""
     cid: str | None = None
     """Cluster ID, unique to a particular cluster."""
+    pid: str | None = None
+    """Pod ID, unique to a workload generating and/or data collecting pod."""
     time: RunTime | None = None
     """Time details of experiment."""
     user: str | None = None
@@ -736,9 +731,11 @@ class Results(BaseModel):
     profiling: Any | None = None
     """Profiling results."""
 
-#------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
 # Root class for benchmark report
-#------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+
 
 class BenchmarkReportV02(BenchmarkReport):
     """Base class for a benchmark report."""
@@ -754,4 +751,3 @@ class BenchmarkReportV02(BenchmarkReport):
     """Stack configuration and workload details of experiment"""
     results: Results
     """Experiment results."""
-

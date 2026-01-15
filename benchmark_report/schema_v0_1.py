@@ -8,10 +8,22 @@ from typing import Optional, Any
 
 from pydantic import BaseModel, model_validator
 
-from .core import BenchmarkReport
+from .base import (
+    BenchmarkReport,
+    Units,
+    WorkloadGenerator,
+    UNITS_QUANTITY,
+    UNITS_PORTION,
+    UNITS_TIME,
+    UNITS_MEMORY,
+    UNITS_BANDWIDTH,
+    UNITS_GEN_LATENCY,
+    UNITS_POWER,
+)
 
 # BenchmarkReport schema version
-VERSION = '0.1'
+VERSION = "0.1"
+
 
 class Parallelism(BaseModel):
     """Accelerator parallelism details."""
@@ -65,7 +77,7 @@ class Host(BaseModel):
     type: list[HostType]
     metadata: Optional[Any] = None
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_types(self):
         """Types must be either all 'replica' or a mix of 'prefill' and 'decode'."""
         if len(self.type) <= 1:
@@ -74,12 +86,12 @@ class Host(BaseModel):
         type_ref = self.type[0]
         if type_ref == HostType.REPLICA:
             if HostType.DECODE in self.type:
-                raise ValueError(f'Cannot mix "replica" with "prefill"/"decode" types.')
+                raise ValueError('Cannot mix "replica" with "prefill"/"decode" types.')
             if HostType.PREFILL in self.type:
-                raise ValueError(f'Cannot mix "replica" with "prefill"/"decode" types.')
+                raise ValueError('Cannot mix "replica" with "prefill"/"decode" types.')
         else:
             if HostType.REPLICA in self.type:
-                raise ValueError(f'Cannot mix "replica" with "prefill"/"decode" types.')
+                raise ValueError('Cannot mix "replica" with "prefill"/"decode" types.')
         return self
 
 
@@ -102,34 +114,11 @@ class Platform(BaseModel):
 
 class Model(BaseModel):
     """AI model details."""
+
     name: str
     quantization: Optional[str] = None
     adapters: Optional[list[dict[str, str]]] = None
     metadata: Optional[Any] = None
-
-
-class WorkloadGenerator(StrEnum):
-    """
-    Enumeration of supported workload generators
-
-    Attributes
-        GUIDELLM: str
-            GuideLLM
-        INFERENCE_MAX: str
-            InferenceMAX
-        INFERENCE_PERF: str
-            Inference Perf
-        VLLM_BENCHMARK: str
-            benchmark_serving from vLLM
-        NOP: str
-            vLLM Load times
-    """
-
-    GUIDELLM = auto()
-    INFERENCE_MAX = 'inferencemax'
-    INFERENCE_PERF = 'inference-perf'
-    VLLM_BENCHMARK = 'vllm-benchmark'
-    NOP = 'nop'
 
 
 class Load(BaseModel):
@@ -165,91 +154,6 @@ class Time(BaseModel):
     metadata: Optional[Any] = None
 
 
-class Units(StrEnum):
-    """
-    Enumeration of units
-
-    Attributes
-        COUNT: str
-            Count
-        MS: str
-            Milliseconds
-        S: str
-            Seconds
-        MB: str
-            Megabytes
-        GB: str
-            Gigabytes
-        TB: str
-            Terabytes
-        MIB: str
-            Mebibytes
-        GIB: str
-            Gibibytes
-        TIB: str
-            Tebibytes
-        MBIT_PER_S: str
-            Megabbits per second
-        GBIT_PER_S: str
-            Gigabits per second
-        TBIT_PER_S: str
-            Terabits per second
-        MB_PER_S: str
-            Megabytes per second
-        GB_PER_S: str
-            Gigabytes per second
-        TB_PER_S: str
-            Terabytes per second
-        GIB_PER_S: str
-            GiB per second
-        MS_PER_TOKEN: str
-            Milliseconds per token
-        S_PER_TOKEN: str
-            Seconds per token
-        WATTS: str
-            Watts
-    """
-
-    # Quantity
-    COUNT = auto()
-    # Portion
-    PERCENT = auto()
-    FRACTION = auto()
-    # Time
-    MS = auto()
-    S = auto()
-    # Memory
-    MB = 'MB'
-    GB = 'GB'
-    TB = 'TB'
-    MIB = 'MiB'
-    GIB = 'GiB'
-    TIB = 'TiB'
-    # Bandwidth
-    MBIT_PER_S = 'Mbit/s'
-    GBIT_PER_S = 'Gbit/s'
-    TBIT_PER_S = 'Tbit/s'
-    GIB_PER_S = "GiB/s"
-
-    MB_PER_S = 'MB/s'
-    GB_PER_S = 'GB/s'
-    TB_PER_S = 'TB/s'
-    # Generation latency
-    MS_PER_TOKEN = 'ms/token'
-    S_PER_TOKEN = 's/token'
-    # Power
-    WATTS = "Watts"
-
-# Lists of compatible units
-units_quantity = [Units.COUNT]
-units_portion = [Units.PERCENT, Units.FRACTION]
-units_time = [Units.MS, Units.S]
-units_memory = [Units.MB, Units.GB, Units.TB, Units.MIB, Units.GIB, Units.TIB]
-units_bandwidth = [Units.MBIT_PER_S, Units.GBIT_PER_S, Units.TBIT_PER_S, Units.MB_PER_S, Units.GB_PER_S, Units.TB_PER_S]
-units_gen_latency = [Units.MS_PER_TOKEN, Units.S_PER_TOKEN]
-units_power = [Units.WATTS]
-
-
 class Statistics(BaseModel):
     """Statistical information about a property."""
 
@@ -263,7 +167,7 @@ class Statistics(BaseModel):
     p5: Optional[float | int] = None
     p10: Optional[float | int] = None
     p25: Optional[float | int] = None
-    p50: Optional[float | int] = None # This is the same as median
+    p50: Optional[float | int] = None  # This is the same as median
     p75: Optional[float | int] = None
     p90: Optional[float | int] = None
     p95: Optional[float | int] = None
@@ -286,12 +190,16 @@ class Requests(BaseModel):
     output_length: Statistics
     """Output sequence length."""
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_units(self):
-        if self.input_length.units not in units_quantity:
-            raise ValueError(f'Invalid units "{self.input_length.units}", must be one of: {" ".join(units_quantity)}')
-        if self.output_length.units not in units_quantity:
-            raise ValueError(f'Invalid units "{self.output_length.units}", must be one of: {" ".join(units_quantity)}')
+        if self.input_length.units not in UNITS_QUANTITY:
+            raise ValueError(
+                f'Invalid units "{self.input_length.units}", must be one of: {" ".join(UNITS_QUANTITY)}'
+            )
+        if self.output_length.units not in UNITS_QUANTITY:
+            raise ValueError(
+                f'Invalid units "{self.output_length.units}", must be one of: {" ".join(UNITS_QUANTITY)}'
+            )
         return self
 
 
@@ -324,18 +232,37 @@ class Latency(BaseModel):
     request_latency: Optional[Statistics] = None
     """End-to-end request latency."""
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_units(self):
-        if self.time_to_first_token.units not in units_time:
-            raise ValueError(f'Invalid units "{self.time_to_first_token.units}", must be one of: {" ".join(units_time)}')
-        if self.normalized_time_per_output_token and self.normalized_time_per_output_token.units not in units_gen_latency:
-            raise ValueError(f'Invalid units "{self.normalized_time_per_output_token.units}", must be one of: {" ".join(units_gen_latency)}')
-        if self.time_per_output_token and self.time_per_output_token.units not in units_gen_latency:
-            raise ValueError(f'Invalid units "{self.time_per_output_token.units}", must be one of: {" ".join(units_gen_latency)}')
-        if self.inter_token_latency and self.inter_token_latency.units not in units_gen_latency:
-            raise ValueError(f'Invalid units "{self.inter_token_latency.units}", must be one of: {" ".join(units_gen_latency)}')
-        if self.request_latency and self.request_latency.units not in units_time:
-            raise ValueError(f'Invalid units "{self.request_latency.units}", must be one of: {" ".join(units_time)}')
+        if self.time_to_first_token.units not in UNITS_TIME:
+            raise ValueError(
+                f'Invalid units "{self.time_to_first_token.units}", must be one of: {" ".join(UNITS_TIME)}'
+            )
+        if (
+            self.normalized_time_per_output_token
+            and self.normalized_time_per_output_token.units not in UNITS_GEN_LATENCY
+        ):
+            raise ValueError(
+                f'Invalid units "{self.normalized_time_per_output_token.units}", must be one of: {" ".join(UNITS_GEN_LATENCY)}'
+            )
+        if (
+            self.time_per_output_token
+            and self.time_per_output_token.units not in UNITS_GEN_LATENCY
+        ):
+            raise ValueError(
+                f'Invalid units "{self.time_per_output_token.units}", must be one of: {" ".join(UNITS_GEN_LATENCY)}'
+            )
+        if (
+            self.inter_token_latency
+            and self.inter_token_latency.units not in UNITS_GEN_LATENCY
+        ):
+            raise ValueError(
+                f'Invalid units "{self.inter_token_latency.units}", must be one of: {" ".join(UNITS_GEN_LATENCY)}'
+            )
+        if self.request_latency and self.request_latency.units not in UNITS_TIME:
+            raise ValueError(
+                f'Invalid units "{self.request_latency.units}", must be one of: {" ".join(UNITS_TIME)}'
+            )
         return self
 
 
@@ -355,14 +282,20 @@ class Service(BaseModel):
     queue_size: Optional[Statistics] = None
     kv_cache_size: Optional[Statistics] = None
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_units(self):
-        if self.batch_size and self.batch_size.units not in units_quantity:
-            raise ValueError(f'Invalid units "{self.batch_size.units}", must be one of: {" ".join(units_quantity)}')
-        if self.queue_size and self.queue_size.units not in units_quantity:
-            raise ValueError(f'Invalid units "{self.queue_size.units}", must be one of: {" ".join(units_quantity)}')
-        if self.kv_cache_size and self.kv_cache_size.units not in units_quantity:
-            raise ValueError(f'Invalid units "{self.kv_cache_size.units}", must be one of: {" ".join(units_quantity)}')
+        if self.batch_size and self.batch_size.units not in UNITS_QUANTITY:
+            raise ValueError(
+                f'Invalid units "{self.batch_size.units}", must be one of: {" ".join(UNITS_QUANTITY)}'
+            )
+        if self.queue_size and self.queue_size.units not in UNITS_QUANTITY:
+            raise ValueError(
+                f'Invalid units "{self.queue_size.units}", must be one of: {" ".join(UNITS_QUANTITY)}'
+            )
+        if self.kv_cache_size and self.kv_cache_size.units not in UNITS_QUANTITY:
+            raise ValueError(
+                f'Invalid units "{self.kv_cache_size.units}", must be one of: {" ".join(UNITS_QUANTITY)}'
+            )
         return self
 
 
@@ -373,14 +306,20 @@ class MemoryMetrics(BaseModel):
     utilization: Optional[Statistics] = None
     bandwidth: Optional[Statistics] = None
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_units(self):
-        if self.consumption and self.consumption.units not in units_memory:
-            raise ValueError(f'Invalid units "{self.consumption.units}", must be one of: {" ".join(units_memory)}')
-        if self.utilization and self.utilization.units not in units_portion:
-            raise ValueError(f'Invalid units "{self.utilization.units}", must be one of: {" ".join(units_portion)}')
-        if self.bandwidth and self.bandwidth.units not in units_bandwidth:
-            raise ValueError(f'Invalid units "{self.bandwidth.units}", must be one of: {" ".join(units_bandwidth)}')
+        if self.consumption and self.consumption.units not in UNITS_MEMORY:
+            raise ValueError(
+                f'Invalid units "{self.consumption.units}", must be one of: {" ".join(UNITS_MEMORY)}'
+            )
+        if self.utilization and self.utilization.units not in UNITS_PORTION:
+            raise ValueError(
+                f'Invalid units "{self.utilization.units}", must be one of: {" ".join(UNITS_PORTION)}'
+            )
+        if self.bandwidth and self.bandwidth.units not in UNITS_BANDWIDTH:
+            raise ValueError(
+                f'Invalid units "{self.bandwidth.units}", must be one of: {" ".join(UNITS_BANDWIDTH)}'
+            )
         return self
 
 
@@ -389,10 +328,12 @@ class ComputeMetrics(BaseModel):
 
     utilization: Optional[Statistics] = None
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_units(self):
-        if self.utilization.units not in units_portion:
-            raise ValueError(f'Invalid units "{self.utilization.units}", must be one of: {" ".join(units_portion)}')
+        if self.utilization.units not in UNITS_PORTION:
+            raise ValueError(
+                f'Invalid units "{self.utilization.units}", must be one of: {" ".join(UNITS_PORTION)}'
+            )
         return self
 
 
@@ -403,10 +344,12 @@ class AcceleratorMetrics(BaseModel):
     compute: Optional[ComputeMetrics] = None
     power: Optional[Statistics] = None
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_units(self):
-        if self.power and self.power.units not in units_power:
-            raise ValueError(f'Invalid units "{self.power.units}", must be one of: {" ".join(units_power)}')
+        if self.power and self.power.units not in UNITS_POWER:
+            raise ValueError(
+                f'Invalid units "{self.power.units}", must be one of: {" ".join(UNITS_POWER)}'
+            )
         return self
 
 
@@ -439,20 +382,20 @@ class BenchmarkReportV01(BenchmarkReport):
     metrics: Metrics
     metadata: Optional[Any] = None
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_version(self):
         """Ensure version is compatible."""
         if self.version != VERSION:
             raise ValueError(f'Invalid version "{self.version}", must be "{VERSION}".')
         return self
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_corresponding_lengths(self):
         """Ensure the lengths of the following match (if present):
-            - scenario.host.accelerator
-            - scenario.host.type
-            - scenario.platform.engine
-            - metrics.resources.accelerator
+        - scenario.host.accelerator
+        - scenario.host.type
+        - scenario.platform.engine
+        - metrics.resources.accelerator
         """
         entity_lengths = {
             "scenario.host.accelerator": None,
