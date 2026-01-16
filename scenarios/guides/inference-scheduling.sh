@@ -166,3 +166,9 @@ export LLMDBENCH_HARNESS_EXPERIMENT_PROFILE=shared_prefix_synthetic.yaml
 
 # Local directory to copy benchmark runtime files and results
 export LLMDBENCH_CONTROL_WORK_DIR=~/data/inference-scheduling
+
+# harness image
+export LLMDBENCH_IMAGE_REGISTRY=quay.io
+export LLMDBENCH_IMAGE_REPO=manoelmrqs
+export LLMDBENCH_IMAGE_NAME=llm-d-benchmark
+export LLMDBENCH_IMAGE_TAG=0.0.1
