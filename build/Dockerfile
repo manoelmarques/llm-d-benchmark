@@ -74,7 +74,7 @@ ARG GUIDELLM_BRANCH=main
 ARG GUIDELLM_COMMIT=adfa108ab1df6f2a1452d1037a71817a493303a8
 RUN git clone --branch ${GUIDELLM_BRANCH} ${GUIDELLM_REPO}
 RUN cd guidellm; \
-    git checkout ${GUIDELLM_COMMIT}; \
+#   git checkout ${GUIDELLM_COMMIT}; \
     pip install .[recommended]
 
 ARG INFERENCEMAX_REPO=https://github.com/kimbochen/bench_serving.git
