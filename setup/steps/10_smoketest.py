@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 import pykube
 import ipaddress
+from pykube.objects import NamespacedAPIObject
 
 # Add project root to path for imports
 current_file = Path(__file__).resolve()
@@ -208,6 +209,87 @@ def check_deployment(api: pykube.HTTPClient, client: any, ev: dict):
             return 1
     return 0
 
+def check_deployment_fma(api: pykube.HTTPClient, client: any, ev: dict) -> int:
+    """
+    Checking if current FMA deployment was successful
+    """
+
+    class InferenceServerConfig(NamespacedAPIObject):
+        """ Inference Server Config"""
+        version = "fma.llm-d.ai/v1alpha1"
+        endpoint = "inferenceserverconfigs"
+        kind = "InferenceServerConfig"
+
+    announce("🔍 Checking if current FMA deployment was successful...")
+    dry_run = ev["control_dry_run"]
+
+    pod_string = "decode"
+
+    rc = 0
+    model_list = ev.get("deploy_model_list", "").replace(",", " ").split()
+    for model in model_list:
+        current_model = model_attribute(model, "model", ev)
+        if dry_run:
+            announce(f"✅ [DRY RUN] FMA deployment successfull ({current_model})")
+            continue
+
+        current_model_id_label = model_attribute(model, "modelid_label", ev)
+        label_sel = f"llm-d.ai/model={current_model_id_label},llm-d.ai/role={pod_string}"
+        requester_pods = \
+            client.CoreV1Api().list_namespaced_pod(namespace=ev["vllm_common_namespace"],
+                                                    label_selector=label_sel)
+        if not requester_pods.items:
+            announce(f"ERROR: no requester pods found for model '{current_model}'!")
+            rc = 1
+            continue
+
+        for pod in requester_pods.items:
+            requester_pod_name = pod.metadata.name
+            launcher_pod_name = pod.metadata.labels.get("dual-pods.llm-d.ai/dual")
+            if launcher_pod_name is None or launcher_pod_name == "":
+                announce(f"ERROR: no launcher pod found for requester pod '{pod.metadata.name}'!")
+                rc = 1
+                continue
+
+            inference_server_config_name = \
+                pod.metadata.annotations.get("dual-pods.llm-d.ai/inference-server-config")
+            if inference_server_config_name is None or inference_server_config_name == "":
+                announce("ERROR: no Inference Server Config found for requester pod "
+                         f"'{requester_pod_name}'!")
+                rc = 1
+                continue
+
+            try:
+                inference_server = InferenceServerConfig.objects(api).get(
+                    name=inference_server_config_name,
+                    namespace=ev["vllm_common_namespace"],
+                )
+            except client.ApiException as e:
+                announce("ERROR: Unable to find a inference_server "
+                         f"'{inference_server_config_name}' "
+                         f"for requester pod: '{requester_pod_name}': {e}")
+                rc = 1
+                continue
+
+            port = inference_server.obj.get("spec", {}).get("modelServerConfig", {}).get("port")
+            try:
+                launcher_pod = \
+                    client.CoreV1Api().read_namespaced_pod(name=launcher_pod_name,
+                                                           namespace=ev["vllm_common_namespace"])
+                announce(f"✅ Requester pod {requester_pod_name} connected to vLLM server "
+                         f"at http://{launcher_pod.status.pod_ip}:{port}")
+            except client.ApiException as e:
+                announce(f"ERROR: Unable to find a launcher pod '{launcher_pod_name}' "
+                         f"for requester pod: '{requester_pod_name}': {e}")
+                rc = 1
+                continue
+
+        if rc == 0:
+            announce(f"✅ FMA deployment successfull ({current_model})")
+
+    return rc
+
+
 def main():
     """Main function following the pattern from other Python steps"""
 
@@ -220,6 +302,9 @@ def main():
     api, client = kube_connect(f'{ev["control_work_dir"]}/environment/context.ctx')
 
     # Execute the main logic
+    if ev.get("fma_enabled", False):
+        return check_deployment_fma(api, client, ev)
+
     return check_deployment(api, client, ev)
 
 
