@@ -16,7 +16,6 @@ from functions import (
     announce,
     llmdbench_execute_cmd,
     model_attribute,
-    extract_environment,
     add_pull_secret,
     check_storage_class,
     check_accelerator,
@@ -34,8 +33,10 @@ from functions import (
     add_resources,
     add_accelerator,
     add_affinity,
+    add_fma,
     clear_string,
     install_wva_components,
+    install_fma_components,
     kube_connect,
     kubectl_apply
 )
@@ -331,6 +332,8 @@ prefill:
       {add_config(prefill_extra_container_config, 6, "", ev).lstrip()}
     {conditional_volume_config(prefill_extra_volume_mounts, "volumeMounts", 4, ev)}
   {conditional_volume_config(prefill_extra_volumes, "volumes", 2, ev)}
+{add_fma(ev)}
+
 """
 
     return clear_string(yaml_content)
@@ -603,6 +606,11 @@ def main():
           #
           install_wva_components(ev)
           announce(f'✅ WVA has been configured for Model "{model}".')
+
+      if ev.get("fma_enabled", False):
+          # Fast Model Actuation dual pod chart
+          #install_fma_components(ev)
+          announce(f'✅ FMA dual pod controler has been configured for Model "{model}".')
 
       model_number += 1
 

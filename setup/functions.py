@@ -1522,6 +1522,30 @@ def add_affinity(ev:dict) -> str:
 
     return affinity_string
 
+def add_fma(ev:dict) -> str:
+
+    if not ev.get("fma_enabled", False):
+        return ""
+
+    # -- Requester configuration part of the dual-pod solution for FMA
+    requester_string = f"""
+requester:
+  enable: true
+  image: {ev['fma_requester_image_repository']}:{ev['fma_requester_image_tag']}
+  port:
+    probes: 8080
+    spi: 8081
+  readinessProbe:
+    initialDelaySeconds: 2
+    periodSeconds: 5
+  resources:
+    limits:
+      gpus: 1
+      cpus: 1
+      memory: 250Mi
+"""
+    return requester_string
+
 def add_accelerator(ev:dict, identifier: str = "decode") -> str:
 
     if ev[f"vllm_modelservice_{identifier}_accelerator_resource"] == "auto" :
@@ -2667,6 +2691,23 @@ def install_wva(wva_config, wva_namespace, dry_run=False, verbose=False):
         verbose=verbose,
     )
 
+def install_fma(ev: dict, fma_config, dry_run=False, verbose=False):
+    tmp_out_dir = tempfile.mkdtemp()
+    fma_values_file = os.path.join(tmp_out_dir, "fma_config.yaml")
+
+    with open(fma_values_file, "w") as f:
+        yaml.dump(fma_config, f, sort_keys=False)
+
+    llmdbench_execute_cmd(
+        f"{ev['control_hcmd']} upgrade -i chart-name "
+        f"{ev['fma_helm_repository_url']} "
+        f"--version {ev['fma_chart_version']} "
+        f"-n {ev['vllm_common_namespace']} "
+        f"-f {fma_values_file}",
+        dry_run=dry_run,
+        verbose=verbose,
+    )
+
 
 def install_wva_components(ev: dict):
     # Use pykube to connect to Kubernetes
@@ -2759,5 +2800,22 @@ def install_wva_components(ev: dict):
         dry_run=ev["control_dry_run"],
         verbose=ev["control_verbose"],
     )
+
+def install_fma_components(ev: dict):
+    fma_config = {
+        "Image": f"{ev['fma_image_repository']}:{ev['fma_image_tag']}",
+        "Local": False,
+        "NodeViewClusterRole": f"{ev['fma_cluster_role']}",
+        "SleeperLimit": int(ev['fma_sleeper_limit']),
+        "DebugAcceleratorMemory": f"{ev['fma_debug_accelerator_memory']}",
+    }
+
+    install_fma(
+        ev,
+        fma_config,
+        dry_run=ev["control_dry_run"],
+        verbose=ev["control_verbose"],
+    )
+
 
 
