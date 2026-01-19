@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import json
 import re
 from datetime import datetime
 from typing import List, Tuple, Union, Any
@@ -1678,6 +1679,45 @@ def add_affinity(ev:dict) -> str:
 
     return affinity_string
 
+def add_fma_requester(ev:dict) -> str:
+
+    if not ev.get("fma_enabled", False):
+        return ""
+
+    # -- Requester configuration part of the dual-pod solution for FMA
+    requester_string = f"""
+requester:
+  enable: true
+  image: {ev['fma_requester_image_repository']}:{ev['fma_requester_image_tag']}
+  accelerators: "GPU-0"
+  inferenceServerConfig: "inference-server-config-example"
+  inferenceServerConfigAnnotations:
+    description: "Example InferenceServerConfig"
+  launcherConfig: "launcher-config-example"
+  launcherConfigAnnotations: {{}}
+  port:
+    probes: {ev['fma_requester_probe_port']}
+    spi: {ev['fma_requester_spi_port']}
+  readinessProbe:
+    initialDelaySeconds: {ev['fma_requester_readiness_probe_initial_delay']}
+    periodSeconds: {ev['fma_requester_readiness_probe_period']}
+  resources:
+    limits:
+      gpus: {ev['fma_requester_limits_gpu']}
+      cpus: {ev['fma_requester_limits_cpu']}
+      memory: {ev['fma_requester_limits_memory']}
+  modelServerConfig:
+    annotations: {{}}
+    labels: {{}}
+    env_vars:
+      VLLM_SERVER_DEV_MODE: "1"
+      VLLM_USE_V1: "1"
+      VLLM_LOGGING_LEVEL: "DEBUG"
+    options: ""
+    port: 8005
+"""
+    return requester_string
+
 def add_accelerator(ev:dict, identifier: str = "decode") -> str:
 
     if ev[f"vllm_modelservice_{identifier}_accelerator_resource"] == "auto" :
@@ -2198,9 +2238,18 @@ def wait_for_pods_created_running_ready(api_client, ev: dict, component_nr: int,
     elif component in [ "inferencepool" ] :
         label_selector = f"inferencepool={ev['deploy_current_model_id_label']}-gaie-epp"
         silent = False
+    elif component in [ "requester-decode" ]:
+        label_selector = "app=dp-app"
+        silent = False
     elif component.count("testinference-pod") :
         label_selector = f"llm-d.ai/id={component}"
         silent = True
+    elif component.count("fma_dual_pod") :
+        label_selector = "app.kubernetes.io/name=fma-controllers,app.kubernetes.io/component=dual-pods-controller"
+        silent = False
+    elif component.count("fma_launcher_populator") :
+        label_selector = "app.kubernetes.io/name=fma-controllers,app.kubernetes.io/component=launcher-populator"
+        silent = False
     else :
         announce(f"ERROR: Unknown component ({component})")
         return 10
@@ -3043,6 +3092,444 @@ def install_wva(wva_config, wva_namespace, dry_run=False, verbose=False):
         verbose=verbose,
     )
 
+def install_fma_crds(
+        api: pykube.HTTPClient,
+        ev : dict
+    ) -> int:
+    """
+    Install Fast Fast Model Actuation API crds.
+
+    Args:
+        api: pykube http client
+        ev: Environment variables dictionary
+
+    Returns:
+        int: 0 for success, non-zero for failure
+    """
+
+    if not ev["user_is_admin"] :
+        announce("❗No privileges to setup Fast Model Actuation API crds. Will assume a user with proper privileges already performed this action.")
+        return 0
+
+    crd_urls = {
+        "inferenceserverconfigs.fma.llm-d.ai": ev['fma_inference_server_config_crd_url'],
+        "launcherconfigs.fma.llm-d.ai": ev['fma_launcher_config_crd_url'],
+    }
+
+    _, crd_names = kubectl_get(api=api, object_api='', object_kind="CustomResourceDefinition", object_name='')
+
+    for name in crd_names:
+        if name in crd_urls:
+            del crd_urls[name]
+            announce(f"✅ Kubernetes Fast Fast Model Actuation CRD {name} already installed")
+
+    for name, url in crd_urls.items():
+        announce(f"🚀 Fast Fast Model Actuation API {name} CRD...")
+        install_crd_cmd = f"{ev['control_kcmd']} apply --server-side -f {url}"
+        ecode = llmdbench_execute_cmd(actual_cmd=install_crd_cmd, dry_run=ev["control_dry_run"], verbose=ev["control_verbose"])
+        if ecode != 0:
+            announce(f"ERROR: Failed while running \"{install_crd_cmd}\" (exit code: {ecode})")
+            return ecode
+        else :
+            announce(f"✅ Fast Fast Model Actuation API {name} CRD installed")
+
+    return 0
+
+def install_fma_clusterole(
+        api: pykube.HTTPClient,
+        ev : dict
+    ) -> int:
+    """ install fma clusterrole """
+
+    _, clusterrole_names = kubectl_get(api=api, object_api='', object_kind="ClusterRole", object_name='')
+
+    for name in clusterrole_names:
+        if name == "fma-node-viewer":
+            announce(f"✅ Kubernetes Fast Fast Model Actuation ClusterRole {name} already installed")
+            return 0
+
+    clusterrole_yaml = f"""
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fma-node-viewer
+rules:
+  - apiGroups: [""]
+    resources:
+      - nodes
+    verbs:
+      - get
+      - list
+      - watch
+"""
+     # Create yamls directory
+    yamls_dir = Path(ev["control_work_dir"]) / "setup" / "yamls"
+    yamls_dir.mkdir(parents=True, exist_ok=True)
+    clusterole_file = yamls_dir / f"{ev['current_step']}_fma_clusterrole.yaml"
+    with open(clusterole_file, 'w') as f:
+        f.write(clusterrole_yaml)
+
+    announce(f"🚚 Deploying Fast Model Actuation ClusterRole (from file located at {ev['control_work_dir']})...")
+
+    # Apply RBAC
+    kubectl_deploy_cmd = f"{ev['control_kcmd']} apply -f {clusterole_file}"
+    ecode = llmdbench_execute_cmd(actual_cmd=kubectl_deploy_cmd, dry_run=ev["control_dry_run"], verbose=ev["control_verbose"], fatal=True)
+    if ecode != 0:
+        announce(f"ERROR: Failed while running \"{kubectl_deploy_cmd}\" (exit code: {ecode})")
+        return ecode
+    else :
+        announce(f"✅ Fast Fast Model Actuation ClusterRole {name} installed")
+
+    return 0
+
+def install_fma_rbac(api: pykube.HTTPClient, ev: dict) -> int:
+    """ install fma rbac """
+
+    kubectl_delete(api=api,
+                   object_kind="RoleBinding",
+                   object_name="fma-requester",
+                   object_namespace=ev["vllm_common_namespace"],
+                   dry_run=ev["control_dry_run"],
+                   verbose=ev["control_verbose"])
+    kubectl_delete(api=api,
+                   object_kind="Role",
+                   object_name="fma-requester",
+                   object_namespace=ev["vllm_common_namespace"],
+                   dry_run=ev["control_dry_run"],
+                   verbose=ev["control_verbose"])
+
+    rbac_yaml = f"""
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: {ev['vllm_common_namespace']}
+  name: fma-requester
+rules:
+- apiGroups: ["fma.llm-d.ai"]
+  resources: ["inferenceserverconfigs", "launcherconfigs"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["gpu-map"]
+  verbs: ["update", "patch", "get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: {ev['vllm_common_namespace']}
+  name: fma-requester
+roleRef:
+  kind: Role
+  name: fma-requester
+  apiGroup: rbac.authorization.k8s.io
+"""
+     # Create yamls directory
+    yamls_dir = Path(ev["control_work_dir"]) / "setup" / "yamls"
+    yamls_dir.mkdir(parents=True, exist_ok=True)
+    rbac_file = yamls_dir / f"{ev['current_step']}_fma_rbac.yaml"
+    with open(rbac_file, 'w') as f:
+        f.write(rbac_yaml)
+
+    announce(f"🚚 Deploying Fast Model Actuation RBAC (from file located at {ev['control_work_dir']})...")
+
+    # Apply RBAC
+    kubectl_deploy_cmd = f"{ev['control_kcmd']} apply -f {rbac_file}"
+    ecode = llmdbench_execute_cmd(actual_cmd=kubectl_deploy_cmd, dry_run=ev["control_dry_run"], verbose=ev["control_verbose"], fatal=True)
+    if ecode != 0:
+        announce(f"ERROR: Failed while running \"{kubectl_deploy_cmd}\" (exit code: {ecode})")
+        return ecode
+    else :
+        announce(f"✅ Fast Fast Model Actuation RBAC installed")
+
+    return 0
+
+def install_fma_gpu_configmap(ev: dict) -> int:
+    """ install fma gpu configmap """
+
+    announce("Building GPU Node Map ...")
+
+    try:
+        result = subprocess.run(
+            [
+                "kubectl",
+                "get",
+                "pods",
+                "-o",
+                "name",
+                "--no-headers=true",
+                "-l",
+                "app=nvidia-device-plugin-daemonset",
+                "-n",
+                "nvidia-gpu-operator",
+            ],
+            capture_output=True, text=True, check=True)
+
+        configmap_yaml = f"""
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: {ev['vllm_common_namespace']}
+  name: gpu-map
+data:
+"""
+        node_map = {}
+        for line in result.stdout.splitlines():
+            name = line.removeprefix("pod/")
+            r = subprocess.run(
+                ["kubectl", "describe", "pod", name, "-n", "nvidia-gpu-operator"],
+                capture_output=True, text=True, check=True
+            )
+            node = ""
+            for line in r.stdout.splitlines():
+                if line.startswith("Node:"):
+                    node = line.removeprefix("Node:").rsplit("/", 1)[0].strip()
+                    break
+
+            if node == "":
+                continue
+
+            try:
+                r = subprocess.run(
+                    [
+                        "kubectl",
+                        "exec",
+                        "-n",
+                        "nvidia-gpu-operator",
+                        "-it",
+                        name,
+                        "--",
+                        "nvidia-smi",
+                        "--query-gpu=index,uuid",
+                        "--format=csv,noheader",
+                    ],
+                    capture_output=True, text=True, check=True,
+                )
+            except subprocess.CalledProcessError:
+                announce(f"Could not index node '{node}' on pod '{name}' namespace 'nvidia-gpu-operator'")
+                continue
+
+            entries = []
+            for line in r.stdout.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    index, gpu_id = parts[0].removesuffix(","), parts[1]
+                    entries.append(f'"{gpu_id}": {index}')
+
+            node_map[node] = f"{node}: '{{{' ,'.join(entries)}}}'"
+            announce(f"GPU Node '{node}' map: {node_map[node]}")
+    except subprocess.CalledProcessError as e:
+        announce(f"ERROR: Failed building gpu map config: {e.cmd} returned {e.returncode}.")
+        return e.returncode
+
+    for node in sorted(node_map.keys()):
+        configmap_yaml += f"  {node_map[node]}\n"
+
+    # Create yamls directory
+    yamls_dir = Path(ev["control_work_dir"]) / "setup" / "yamls"
+    yamls_dir.mkdir(parents=True, exist_ok=True)
+    configmap_file = yamls_dir / f"{ev['current_step']}_fma_gpu_configmap.yaml"
+    with open(configmap_file, 'w') as f:
+        f.write(configmap_yaml)
+
+    announce(f"🚚 Deploying Fast Model Actuation GPU Configmap (from file located at {ev['control_work_dir']})...")
+
+    # Apply ConfigMap
+    kubectl_deploy_cmd = f"{ev['control_kcmd']} apply -f {configmap_file}"
+    ecode = llmdbench_execute_cmd(actual_cmd=kubectl_deploy_cmd,
+                                  dry_run=ev["control_dry_run"], verbose=ev["control_verbose"], fatal=True)
+    if ecode != 0:
+        announce(f"ERROR: Failed while running \"{kubectl_deploy_cmd}\" (exit code: {ecode})")
+        return ecode
+    else :
+        announce(f"✅ Fast Fast Model Actuation ConfigMap installed")
+
+    return 0
+
+def install_fma_gpu_configmap_using_pods(api: pykube.HTTPClient, ev: dict) -> int:
+    """ install fma gpu configmap using pods """
+
+    if ev["control_dry_run"]:
+        announce("Install FMA GPU ConfigMap skipped on dry run")
+        return 0
+
+    announce("Building GPU Node Map ...")
+
+    configmap_yaml = f"""
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: {ev['vllm_common_namespace']}
+  name: gpu-map
+data:
+"""
+    node_map = {}
+    try:
+        tmp_out_dir = tempfile.mkdtemp()
+        nodes = pykube.Node.objects(api)
+        for node in nodes:
+            # Check if unschedulable
+            unsched_output = subprocess.run(
+                [
+                    "kubectl",
+                    "get",
+                    "node",
+                    node.name,
+                    "-o",
+                    "jsonpath={.spec.unschedulable}",
+                ],
+                capture_output=True, text=True, check=True)
+            unsched = unsched_output.stdout.strip().lower()
+            if unsched == "true":
+                announce(f"Will not index Node {node.name} because it is unschedulable")
+                continue
+
+            pod_name = f"{node.name}-map"
+            pod_yaml = f"""
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: {ev['vllm_common_namespace']}
+  name: {pod_name}
+  labels:
+    app: gather-gpu-map
+spec:
+  restartPolicy: OnFailure
+  containers:
+  - name: c1
+    image: nvcr.io/nvidia/cuda:12.8.0-base-ubuntu22.04
+    command: [ "nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"]
+    resources:
+      limits:
+        nvidia.com/gpu: "0"
+      requests:
+        cpu: "2"
+        memory: 1Gi
+        nvidia.com/gpu: "0"
+  nodeSelector:
+    kubernetes.io/hostname: "{node.name}"
+"""
+            pod_file = os.path.join(tmp_out_dir, f"{node.name}-map-pod.yaml")
+            with open(pod_file, 'w') as f:
+                f.write(pod_yaml)
+            try:
+                kubectl_deploy_cmd = f"{ev['control_kcmd']} apply -f {pod_file}"
+                ecode = llmdbench_execute_cmd(actual_cmd=kubectl_deploy_cmd,
+                                            dry_run=False,
+                                            verbose=ev["control_verbose"], fatal=True)
+                if ecode != 0:
+                    announce(f"ERROR: Failed while running \"{kubectl_deploy_cmd}\" (exit code: {ecode})")
+                    continue
+            finally:
+                os.remove(pod_file)
+
+            logs = []
+            # Wait for completion
+            try:
+                subprocess.run(
+                [
+                    "kubectl",
+                    "wait",
+                    "-n",
+                    ev["vllm_common_namespace"],
+                    f"pod/{pod_name}",
+                    "--for",
+                    "jsonpath={.status.phase}=Succeeded",
+                    "--timeout",
+                    "15s",
+                ],
+                capture_output=True, text=True, check=True)
+                # Collect logs
+                logs_output = subprocess.run(
+                    [
+                        "kubectl",
+                        "logs",
+                        pod_name,
+                        "-n",
+                        ev["vllm_common_namespace"],
+                    ],
+                    capture_output=True, text=True, check=True)
+                logs = logs_output.stdout.splitlines()
+            except subprocess.CalledProcessError:
+                announce(f"Could not index node {node.name}")
+                continue
+            finally:
+                kubectl_delete(api=api,
+                            object_kind="Pod",
+                            object_name=pod_name,
+                            object_namespace=ev["vllm_common_namespace"],
+                            dry_run=False,
+                            verbose=ev["control_verbose"])
+
+            mapping = {}
+            for line in logs:
+                index, gpu_id = line.strip().split(",", 1) if "," in line else line.strip().split(None, 1)
+                mapping[gpu_id.strip()] = int(index.strip())
+
+            node_map[node.name] = f"{node.name}: '{json.dumps(mapping)}'"
+            announce(f"GPU Node '{node.name}' map: {node_map[node.name]}")
+    except subprocess.CalledProcessError as e:
+        announce(f"ERROR: Failed building gpu map config: {e.cmd} returned {e.returncode}.")
+        return e.returncode
+
+    for node in sorted(node_map.keys()):
+        configmap_yaml += f"  {node_map[node]}\n"
+
+     # Create yamls directory
+    yamls_dir = Path(ev["control_work_dir"]) / "setup" / "yamls"
+    yamls_dir.mkdir(parents=True, exist_ok=True)
+    configmap_file = yamls_dir / f"{ev['current_step']}_fma_gpu_configmap.yaml"
+    with open(configmap_file, 'w') as f:
+        f.write(configmap_yaml)
+
+    announce(f"🚚 Deploying Fast Model Actuation GPU Configmap (from file located at {ev['control_work_dir']})...")
+
+    # Apply ConfigMap
+    kubectl_deploy_cmd = f"{ev['control_kcmd']} apply -f {configmap_file}"
+    ecode = llmdbench_execute_cmd(actual_cmd=kubectl_deploy_cmd,
+                                  dry_run=ev["control_dry_run"], verbose=ev["control_verbose"], fatal=True)
+    if ecode != 0:
+        announce(f"ERROR: Failed while running \"{kubectl_deploy_cmd}\" (exit code: {ecode})")
+        return ecode
+    else :
+        announce(f"✅ Fast Fast Model Actuation ConfigMap installed")
+
+    return 0
+
+def install_fma_chart(model: str, ev: dict, fma_config, dry_run=False, verbose=False) -> int:
+    tmp_out_dir = tempfile.mkdtemp()
+    fma_values_file = os.path.join(tmp_out_dir, "fma_config.yaml")
+
+    with open(fma_values_file, "w") as f:
+        yaml.dump(fma_config, f, sort_keys=False)
+
+    model_id_label = model_attribute(model, "modelid_label", ev)
+
+    announce(f'🚀 Installing helm chart "{model_id_label}-fma" via helmfile...')
+    actual_cmd = (
+        f"{ev['control_hcmd']} upgrade -i {model_id_label}-fma-dp "
+        f"{ev['fma_helm_repository_url']} "
+    )
+    if ev['fma_chart_version'].lower() != "latest":
+        actual_cmd += f"--version {ev['fma_chart_version']} "
+    actual_cmd += (
+        f"-n {ev['vllm_common_namespace']} "
+        f"-f {fma_values_file}"
+    )
+    ecode = llmdbench_execute_cmd(
+        actual_cmd,
+        dry_run=dry_run,
+        verbose=verbose,
+    )
+    if ecode != 0:
+        announce(f"ERROR: Failed while running \"{actual_cmd}\" (exit code: {ecode})")
+        return ecode
+    else :
+        announce(f"✅ Installed helm chart \"{model_id_label}-fma-dp\"")
+
+    return 0
 
 def install_wva_components(ev: dict):
     # Use pykube to connect to Kubernetes
@@ -3137,4 +3624,43 @@ def install_wva_components(ev: dict):
         verbose=ev["control_verbose"],
     )
 
+def install_fma_components(model: str, ev: dict) -> int:
+
+    config = {
+        "global": {
+            "imageRegistry": f"{ev['fma_image_registry']}",
+            "imageTag": f"{ev['fma_image_tag']}",
+            "nodeViewClusterRole": "fma-node-viewer",
+            "enableValidationPolicy": f"{ev['fma_enable_validation_policy']}",
+            "local": False,
+        },
+        "dualPodsController": {
+            "enabled": True,
+            "sleeperLimit": int(ev['fma_dual_pod_sleeper_limit']),
+            "debugAcceleratorMemory": f"{ev['fma_dual_pod_debug_accelerator_memory']}",
+        },
+        "launcherPopulator": {
+            "enabled": False,
+            "pullPolicy": "IfNotPresent",
+            "replicaCount": 1,
+            "resources": {
+                "limits": {
+                    "cpu": f"{ev['fma_launcher_populator_limits_cpu']}",
+                    "memory": f"{ev['fma_launcher_populator_limits_memory']}",
+                },
+                "requests": {
+                    "cpu": f"{ev['fma_launcher_populator_requests_cpu']}",
+                    "memory": f"{ev['fma_launcher_populator_requests_memory']}",
+                }
+            }
+        }
+    }
+
+    return install_fma_chart(
+        model,
+        ev,
+        config,
+        dry_run=ev["control_dry_run"],
+        verbose=ev["control_verbose"],
+    )
 
