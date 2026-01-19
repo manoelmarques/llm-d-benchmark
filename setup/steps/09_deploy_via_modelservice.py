@@ -16,7 +16,6 @@ from functions import (
     announce,
     llmdbench_execute_cmd,
     model_attribute,
-    extract_environment,
     add_pull_secret,
     check_storage_class,
     check_accelerator,
@@ -37,8 +36,15 @@ from functions import (
     check_priority_class,
     add_priority_class_name,
     add_scc_to_service_account,
+    add_fma_requester,
     clear_string,
     install_wva_components,
+    install_fma_crds,
+    install_fma_clusterole,
+    install_fma_rbac,
+    install_fma_gpu_configmap,
+    install_fma_gpu_configmap_using_pods,
+    install_fma_components,
     kube_connect,
     kubectl_apply,
     auto_detect_version,
@@ -240,6 +246,7 @@ prefill:
       {add_config("vllm_modelservice_prefill_extra_container_config", 6, "", ev).lstrip()}
     {conditional_volume_config("vllm_modelservice_prefill_extra_volume_mounts", "volumeMounts", 4, ev)}
   {conditional_volume_config("vllm_modelservice_prefill_extra_volumes", "volumes", 2, ev)}
+{add_fma_requester(ev)}
 """
 
     return clear_string(yaml_content)
@@ -466,6 +473,51 @@ def main():
             ev["vllm_common_namespace"],
             ev["control_dry_run"],
         )
+      if ev.get("fma_enabled", False):
+            # Fast Model Actuation CRDS
+            result = install_fma_crds(api, ev)
+            if result != 0:
+                return result
+
+            # Fast Model Actuation ClusterRole
+            result = install_fma_clusterole(api, ev)
+            if result != 0:
+                return result
+
+            # Fast Model Actuation rbac
+            result = install_fma_rbac(api, ev)
+            if result != 0:
+                return result
+
+            # Fast Model Actuation gpu configmap
+            result = install_fma_gpu_configmap(ev)
+            if result != 0:
+                result = install_fma_gpu_configmap_using_pods(api, ev)
+
+            if result != 0:
+                return result
+
+            # Fast Model Actuation chart
+            result = install_fma_components(model, ev)
+            if result != 0:
+                return result
+
+            # Wait for fma dual pod to be created, running, and ready
+            api_client = client.CoreV1Api()
+            result = wait_for_pods_created_running_ready(
+                api_client, ev, 1, "fma_dual_pod"
+            )
+            if result != 0:
+                return result
+
+            # Wait for fma launcher populator pod to be created, running, and ready
+            #result = wait_for_pods_created_running_ready(
+            #    api_client, ev, 1, "fma_launcher_populator"
+            #)
+            #if result != 0:
+            #    return result
+
+            announce(f'✅ FMA controllers has been configured for Model "{model}".')
 
       # Deploy via helmfile
       announce(f'🚀 Installing helm chart "ms-{release}" via helmfile...')
@@ -504,7 +556,7 @@ def main():
       # Wait for decode pods to be created, running, and ready
       api_client = client.CoreV1Api()
       result = wait_for_pods_created_running_ready(
-          api_client, ev, expected_num_decode_pods, "decode"
+          api_client, ev, expected_num_decode_pods, "decode" if not ev.get("fma_enabled", False) else "requester-decode"
       )
       if result != 0:
           return result

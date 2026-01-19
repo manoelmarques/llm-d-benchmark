@@ -41,6 +41,7 @@ function show_usage {
             -x/--dataset [url for dataset to be replayed (default=$LLMDBENCH_RUN_DATASET_URL)] \n \
             -u/--wva [deploy model with Workload Variant Autoscaler (default=$LLMDBENCH_WVA_ENABLED)] \n \
             -f/--monitoring [enable PodMonitor for Prometheus and vLLM /metrics scraping (default=$LLMDBENCH_VLLM_MONITORING_PODMONITOR_ENABLED)] \n \
+            -j/--fma [deploy model with Fast Model Actuation (default=$LLMDBENCH_FMA_ENABLED)] \n \
             -n/--dry-run [just print the command which would have been executed (default=$LLMDBENCH_CONTROL_DRY_RUN) ] \n \
             -v/--verbose [print the command being executed, and result (default=$LLMDBENCH_CONTROL_VERBOSE) ] \n \
             -i/--non-admin [run the setup script as a non-cluster-level admin user] \n \
@@ -156,6 +157,9 @@ while [[ $# -gt 0 ]]; do
         -f|--monitoring)
         export LLMDBENCH_VLLM_MONITORING_PODMONITOR_ENABLED=true
         export LLMDBENCH_VLLM_COMMON_METRICS_SCRAPE_ENABLED=true
+        ;;
+        -j|--fma)
+        export LLMDBENCH_FMA_ENABLED=true
         ;;
         -n|--dry-run)
         export LLMDBENCH_CLIOVERRIDE_CONTROL_DRY_RUN=1
