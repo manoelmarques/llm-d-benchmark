@@ -328,6 +328,7 @@ def environment_variable_to_dict(ev: dict = {}):
         "user_is_admin",
         "control_environment_type_standalone_active",
         "control_environment_type_modelservice_active",
+        "control_environment_type_fma_active",
         "wva_enabled",
         "vllm_modelservice_multinode",
         "vllm_standalone_launcher",
@@ -1952,6 +1953,12 @@ def is_standalone_deployment(ev: dict) -> bool:
     """
     return ev["control_environment_type_standalone_active"]
 
+def is_fma_deployment(ev: dict) -> bool:
+    """
+    Returns true if it is a fma deployment
+    """
+    return ev["control_environment_type_fma_active"]
+
 def get_accelerator_type(ev: dict) -> str | None:
     """
     Attempts to get the GPU type
@@ -2188,7 +2195,7 @@ def wait_for_pods_created_running_ready(api_client, ev: dict, component_nr: int,
 
     dry_run = ev["control_dry_run"]
     result = 0
-    if component in [ "both", "decode", "prefill" ] :
+    if component in [ "both", "decode", "prefill", "requester"] :
         label_selector=f"llm-d.ai/model={ev['deploy_current_model_id_label']},llm-d.ai/role={component}"
         silent = False
     elif component in [ "gateway" ] :
@@ -2203,6 +2210,12 @@ def wait_for_pods_created_running_ready(api_client, ev: dict, component_nr: int,
     elif component.count("testinference-pod") :
         label_selector = f"llm-d.ai/id={component}"
         silent = True
+    elif component.count("fma_dual_pod") :
+        label_selector = "app.kubernetes.io/name=fma-controllers,app.kubernetes.io/component=dual-pods-controller"
+        silent = False
+    elif component.count("fma_launcher_populator") :
+        label_selector = "app.kubernetes.io/name=fma-controllers,app.kubernetes.io/component=launcher-populator"
+        silent = False
     else :
         announce(f"ERROR: Unknown component ({component})")
         return 10
@@ -3045,6 +3058,129 @@ def install_wva(wva_config, wva_namespace, dry_run=False, verbose=False):
         verbose=verbose,
     )
 
+def install_fma_crds(
+        api: pykube.HTTPClient,
+        ev : dict
+    ) -> int:
+    """
+    Install Fast Fast Model Actuation API crds.
+
+    Args:
+        api: pykube http client
+        ev: Environment variables dictionary
+
+    Returns:
+        int: 0 for success, non-zero for failure
+    """
+
+    if not ev["user_is_admin"] :
+        announce("❗No privileges to setup Fast Model Actuation API crds. Will assume a user with proper privileges already performed this action.")
+        return 0
+
+    crd_urls = {
+        "inferenceserverconfigs.fma.llm-d.ai": ev['fma_inference_server_config_crd_url'],
+        "launcherconfigs.fma.llm-d.ai": ev['fma_launcher_config_crd_url'],
+        "launcherpopulationpolicies.fma.llm-d.ai": ev['fma_launcher_populator_policies_crd_url'],
+    }
+
+    _, crd_names = kubectl_get(api=api, object_api='', object_kind="CustomResourceDefinition", object_name='')
+
+    for name in crd_names:
+        if name in crd_urls:
+            del crd_urls[name]
+            announce(f"✅ Kubernetes Fast Fast Model Actuation CRD {name} already installed")
+
+    for name, url in crd_urls.items():
+        announce(f"🚀 Fast Fast Model Actuation API {name} CRD...")
+        install_crd_cmd = f"{ev['control_kcmd']} apply --server-side -f {url}"
+        ecode = llmdbench_execute_cmd(actual_cmd=install_crd_cmd, dry_run=ev["control_dry_run"], verbose=ev["control_verbose"])
+        if ecode != 0:
+            announce(f"ERROR: Failed while running \"{install_crd_cmd}\" (exit code: {ecode})")
+            return ecode
+        else :
+            announce(f"✅ Fast Fast Model Actuation API {name} CRD installed")
+
+    return 0
+
+def install_fma_clusterole(
+        api: pykube.HTTPClient,
+        ev : dict
+    ) -> int:
+    """ install fma clusterrole """
+
+    _, clusterrole_names = kubectl_get(api=api, object_api='', object_kind="ClusterRole", object_name='')
+
+    for name in clusterrole_names:
+        if name == "fma-node-viewer":
+            announce(f"✅ Kubernetes Fast Fast Model Actuation ClusterRole {name} already installed")
+            return 0
+
+    clusterrole_yaml = f"""
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fma-node-viewer
+rules:
+  - apiGroups: [""]
+    resources:
+      - nodes
+    verbs:
+      - get
+      - list
+      - watch
+"""
+     # Create yamls directory
+    yamls_dir = Path(ev["control_work_dir"]) / "setup" / "yamls"
+    yamls_dir.mkdir(parents=True, exist_ok=True)
+    clusterole_file = yamls_dir / f"{ev['current_step']}_fma_clusterrole.yaml"
+    with open(clusterole_file, 'w') as f:
+        f.write(clusterrole_yaml)
+
+    announce(f"🚚 Deploying Fast Model Actuation ClusterRole (from file located at {ev['control_work_dir']})...")
+
+    # Apply RBAC
+    kubectl_deploy_cmd = f"{ev['control_kcmd']} apply -f {clusterole_file}"
+    ecode = llmdbench_execute_cmd(actual_cmd=kubectl_deploy_cmd, dry_run=ev["control_dry_run"], verbose=ev["control_verbose"], fatal=True)
+    if ecode != 0:
+        announce(f"ERROR: Failed while running \"{kubectl_deploy_cmd}\" (exit code: {ecode})")
+        return ecode
+    else :
+        announce(f"✅ Fast Fast Model Actuation ClusterRole {name} installed")
+
+    return 0
+
+def install_fma_chart(model: str, ev: dict, fma_config, dry_run=False, verbose=False) -> int:
+    tmp_out_dir = tempfile.mkdtemp()
+    fma_values_file = os.path.join(tmp_out_dir, "fma_config.yaml")
+
+    with open(fma_values_file, "w") as f:
+        yaml.dump(fma_config, f, sort_keys=False)
+
+    model_id_label = model_attribute(model, "modelid_label", ev)
+
+    announce(f'🚀 Installing helm chart "{model_id_label}-fma" via helmfile...')
+    actual_cmd = (
+        f"{ev['control_hcmd']} upgrade -i {model_id_label}-fma-dp "
+        f"{ev['fma_helm_repository_url']} "
+    )
+    if ev['fma_chart_version'].lower() != "latest":
+        actual_cmd += f"--version {ev['fma_chart_version']} "
+    actual_cmd += (
+        f"-n {ev['vllm_common_namespace']} "
+        f"-f {fma_values_file}"
+    )
+    ecode = llmdbench_execute_cmd(
+        actual_cmd,
+        dry_run=dry_run,
+        verbose=verbose,
+    )
+    if ecode != 0:
+        announce(f"ERROR: Failed while running \"{actual_cmd}\" (exit code: {ecode})")
+        return ecode
+    else :
+        announce(f"✅ Installed helm chart \"{model_id_label}-fma-dp\"")
+
+    return 0
 
 def install_wva_components(ev: dict):
     # Use pykube to connect to Kubernetes
@@ -3139,4 +3275,42 @@ def install_wva_components(ev: dict):
         verbose=ev["control_verbose"],
     )
 
+def install_fma_components(model: str, ev: dict) -> int:
+
+    config = {
+        "global": {
+            "imageRegistry": f"{ev['fma_image_registry']}",
+            "imageTag": f"{ev['fma_image_tag']}",
+            "nodeViewClusterRole": "fma-node-viewer",
+            "local": False,
+        },
+        "dualPodsController": {
+            "enabled": True,
+            "sleeperLimit": int(ev['fma_dual_pod_sleeper_limit']),
+            "debugAcceleratorMemory": f"{ev['fma_dual_pod_debug_accelerator_memory']}",
+        },
+        "launcherPopulator": {
+            "enabled": True,
+            "pullPolicy": "IfNotPresent",
+            "replicaCount": 1,
+            "resources": {
+                "limits": {
+                    "cpu": f"{ev['fma_launcher_populator_limits_cpu']}",
+                    "memory": f"{ev['fma_launcher_populator_limits_memory']}",
+                },
+                "requests": {
+                    "cpu": f"{ev['fma_launcher_populator_requests_cpu']}",
+                    "memory": f"{ev['fma_launcher_populator_requests_memory']}",
+                }
+            }
+        }
+    }
+
+    return install_fma_chart(
+        model,
+        ev,
+        config,
+        dry_run=ev["control_dry_run"],
+        verbose=ev["control_verbose"],
+    )
 

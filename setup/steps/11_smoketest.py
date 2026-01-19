@@ -24,7 +24,8 @@ from functions import announce, \
         get_model_name_from_pod, \
         get_image, \
         kubectl_get, \
-        kube_connect
+        kube_connect, \
+        is_fma_deployment
 
 # ---------------- Helpers ----------------
 
@@ -208,6 +209,80 @@ def check_deployment(api: pykube.HTTPClient, client: any, ev: dict):
             return 1
     return 0
 
+def check_deployment_fma(client: any, ev: dict) -> int:
+    """
+    Checking if current FMA deployment was successful
+    """
+
+    announce("🔍 Checking if current FMA deployment was successful...")
+    dry_run = ev["control_dry_run"]
+
+    rc = 0
+    model_list = ev.get("deploy_model_list", "").replace(",", " ").split()
+    api = client.CustomObjectsApi()
+    apps_v1 = client.AppsV1Api()
+    for model in model_list:
+        current_model = model_attribute(model, "model", ev)
+        if dry_run:
+            announce(f"✅ [DRY RUN] FMA deployment successfull ({current_model})")
+            continue
+
+        model_label = model_attribute(model, "label", ev)
+        try:
+            _ = api.get_namespaced_custom_object(
+                    group="fma.llm-d.ai",
+                    version="v1alpha1",
+                    namespace=ev["vllm_common_namespace"],
+                    plural="inferenceserverconfigs",
+                    name=f"fma-{model_label}",
+                )
+        except client.exceptions.ApiException:
+            announce(f"ERROR: no InferenceServerConfig found for model '{current_model}'!")
+            rc = 1
+            continue
+
+        try:
+            _ = api.get_namespaced_custom_object(
+                    group="fma.llm-d.ai",
+                    version="v1alpha1",
+                    namespace=ev["vllm_common_namespace"],
+                    plural="launcherconfigs",
+                    name=f"fma-{model_label}",
+                )
+        except client.exceptions.ApiException:
+            announce(f"ERROR: no LauncherConfig found for model '{current_model}'!")
+            rc = 1
+            continue
+
+        try:
+            _ = api.get_namespaced_custom_object(
+                    group="fma.llm-d.ai",
+                    version="v1alpha1",
+                    namespace=ev["vllm_common_namespace"],
+                    plural="launcherpopulationpolicies",
+                    name=f"fma-{model_label}",
+                )
+        except client.exceptions.ApiException:
+            announce(f"ERROR: no LauncherPopulationPolicy found for model '{current_model}'!")
+            rc = 1
+            continue
+
+        try:
+            _ = apps_v1.read_namespaced_replica_set(
+                    name=f"fma-requester-{model_label}",
+                    namespace=ev["vllm_common_namespace"],
+                )
+        except client.exceptions.ApiException:
+            announce(f"ERROR: no LauncherPopulationPolicy found for model '{current_model}'!")
+            rc = 1
+            continue
+
+        if rc == 0:
+            announce(f"✅ FMA deployment successfull ({current_model})")
+
+    return rc
+
+
 def main():
     """Main function following the pattern from other Python steps"""
 
@@ -220,6 +295,9 @@ def main():
     api, client = kube_connect(f'{ev["control_work_dir"]}/environment/context.ctx')
 
     # Execute the main logic
+    if is_fma_deployment(ev):
+        return check_deployment_fma(client, ev)
+
     return check_deployment(api, client, ev)
 
 

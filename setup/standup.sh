@@ -26,7 +26,9 @@ export LLMDBENCH_CONTROL_DRY_RUN=${LLMDBENCH_CONTROL_DRY_RUN:-0}
 export LLMDBENCH_CONTROL_VERBOSE=${LLMDBENCH_CONTROL_VERBOSE:-0}
 export LLMDBENCH_DEPLOY_SCENARIO=${LLMDBENCH_DEPLOY_SCENARIO:-}
 export LLMDBENCH_CLIOVERRIDE_DEPLOY_SCENARIO=
-LLMDBENCH_STEP_LIST=$(find "$LLMDBENCH_STEPS_DIR" -name "*.sh" -o -name "*.py" | $LLMDBENCH_CONTROL_SCMD -e "s^.sh^^g" -e "s^.py^^g" | grep -v 11_ | sort | rev | cut -d '/' -f 1 | rev | uniq)
+LLMDBENCH_STEP_LIST=$(find "$LLMDBENCH_STEPS_DIR" -name "*.sh" -o -name "*.py" \
+  | $LLMDBENCH_CONTROL_SCMD -e "s^.sh^^g" -e "s^.py^^g" \
+  | sort | rev | cut -d '/' -f 1 | rev | uniq)
 
 function show_usage {
     echo -e "Usage: ${LLMDBENCH_CONTROL_CALLER} -s/--step [step list] (default=$(echo $LLMDBENCH_STEP_LIST | $LLMDBENCH_CONTROL_SCMD -e "s^${LLMDBENCH_STEPS_DIR}/^^g" -e 's/ /,/g') \n \
@@ -34,7 +36,7 @@ function show_usage {
             -m/--models [list the models to be stood up (default=$LLMDBENCH_DEPLOY_MODEL_LIST)] \n \
             -p/--namespace [comma separated list of namespaces indicating, respectively, where a stack will be stood up, where will the benchmark run and where will wva operate (defaults=$LLMDBENCH_VLLM_COMMON_NAMESPACE,$LLMDBENCH_HARNESS_NAMESPACE,$LLMDBENCH_WVA_NAMESPACE)] \n \
             -q/--serviceaccount [service account used when standing up the stack (default=$LLMDBENCH_VLLM_COMMON_SERVICE_ACCOUNT)] \n \
-            -t/--methods [list of standup methods (default=$LLMDBENCH_DEPLOY_METHODS, possible values \"standalone\" and \"modelservice\") ] \n \
+            -t/--methods [list of standup methods (default=$LLMDBENCH_DEPLOY_METHODS, possible values \"standalone\", \"modelservice\" and \"fma\") ] \n \
             -a/--affinity [kubernetes node affinity] (default=$LLMDBENCH_VLLM_COMMON_AFFINITY) \n \
             -b/--annotations [kubernetes pod annotations] (default=$LLMDBENCH_VLLM_COMMON_ANNOTATIONS) \n \
             -r/--release [modelservice helm chart release name (default=$LLMDBENCH_VLLM_MODELSERVICE_RELEASE)] \n \
@@ -192,7 +194,7 @@ export LLMDBENCH_CONTROL_CLI_OPTS_PROCESSED=1
 source "${LLMDBENCH_CONTROL_DIR}/env.sh"
 
 
-_e=$(echo ${LLMDBENCH_STEP_LIST} | grep "[0-9]-[0-9]" | grep -v 11_ || true)
+_e=$(echo ${LLMDBENCH_STEP_LIST} | grep "[0-9]-[0-9]" || true)
 if [[ ! -z ${_e} ]]; then
   LLMDBENCH_STEP_LIST=$(eval echo $(echo {${LLMDBENCH_STEP_LIST}} | $LLMDBENCH_CONTROL_SCMD 's^-^..^g'))
 fi

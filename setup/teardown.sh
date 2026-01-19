@@ -154,22 +154,60 @@ for resource in ${LLMDBENCH_CONTROL_RESOURCE_LIST//,/ }; do
   fi
 done
 
+for resource in ${LLMDBENCH_CONTROL_FMA_RESOURCE_LIST//,/ }; do
+  has_resource=$($LLMDBENCH_CONTROL_KCMD get ${resource} --no-headers -o name 2>&1 | grep error || true)
+  if [[ ! -z ${has_resource} ]]; then
+    export LLMDBENCH_CONTROL_FMA_RESOURCE_LIST=$(echo ${LLMDBENCH_CONTROL_FMA_RESOURCE_LIST} | $LLMDBENCH_CONTROL_SCMD -e "s/${resource},/,/g" -e 's/,,/,/g' -e 's/^,//')
+  fi
+done
+
 announce "🧹 Cleaning up namespace: $LLMDBENCH_VLLM_COMMON_NAMESPACE"
 
 for tgtns in ${LLMDBENCH_VLLM_COMMON_NAMESPACE} ${LLMDBENCH_HARNESS_NAMESPACE}; do
   hclist=
   for model in ${LLMDBENCH_DEPLOY_MODEL_LIST//,/ }; do
 
-    if [[ $LLMDBENCH_CONTROL_ENVIRONMENT_TYPE_MODELSERVICE_ACTIVE -eq 1 ]]; then
+    if [[ ${LLMDBENCH_CONTROL_ENVIRONMENT_TYPE_MODELSERVICE_ACTIVE:-0} -eq 1 || ${LLMDBENCH_CONTROL_ENVIRONMENT_TYPE_FMA_ACTIVE:-0} -eq 1 ]]; then
       hclist=$($LLMDBENCH_CONTROL_HCMD --namespace $tgtns list --no-headers | grep -E "${LLMDBENCH_VLLM_MODELSERVICE_RELEASE}|$(model_attribute $model modelid_label)" || true)
     fi
     hclist=$(echo "${hclist}" | awk '{ print $1 }')
 
+    # FMA controllers must be uninstalled AFTER the modelservice chart so the
+    # dual-pods controller is running to remove finalizers from requester, etc
+    hclist_non_fma=
+    hclist_fma=
     for hc in ${hclist}; do
+      case "$hc" in
+        *-fma-dp) hclist_fma="${hclist_fma} ${hc}" ;;
+        *)        hclist_non_fma="${hclist_non_fma} ${hc}" ;;
+      esac
+    done
+
+    for hc in ${hclist_non_fma}; do
       announce "🗑️  Deleting Helm release \"${hc}\"..."
       llmdbench_execute_cmd "${LLMDBENCH_CONTROL_HCMD} uninstall ${hc} --namespace $LLMDBENCH_VLLM_COMMON_NAMESPACE" ${LLMDBENCH_CONTROL_DRY_RUN} ${LLMDBENCH_CONTROL_VERBOSE}
       announce "✅ Helm release \"${hc}\" fully deleted."
     done
+
+    # Delete the installed FMA resources
+    tgtres=$(${LLMDBENCH_CONTROL_KCMD} --namespace $tgtns get ${LLMDBENCH_CONTROL_FMA_RESOURCE_LIST} -o name)
+    for delres in $tgtres; do
+      announce "🗑️  Deleting FMA resource \"${delres}\"..."
+      llmdbench_execute_cmd "${LLMDBENCH_CONTROL_KCMD} delete --namespace $LLMDBENCH_VLLM_COMMON_NAMESPACE --ignore-not-found=true $delres" ${LLMDBENCH_CONTROL_DRY_RUN} ${LLMDBENCH_CONTROL_VERBOSE}
+      announce "✅ FMA resource \"${delres}\" fully deleted."
+    done
+
+    # Wait for requester and launcher pods to terminate before removing FMA controllers
+    if [[ -n "${hclist_fma}" ]]; then
+      announce "⏳ Waiting for requester and launcher pods to terminate..."
+      llmdbench_execute_cmd "${LLMDBENCH_CONTROL_KCMD} --namespace $tgtns wait --for=delete pod -l dual-pods.llm-d.ai/dual --timeout=120s" ${LLMDBENCH_CONTROL_DRY_RUN} ${LLMDBENCH_CONTROL_VERBOSE} 2>/dev/null || true
+
+      for hc in ${hclist_fma}; do
+        announce "🗑️  Deleting FMA Helm release \"${hc}\"..."
+        llmdbench_execute_cmd "${LLMDBENCH_CONTROL_HCMD} uninstall ${hc} --namespace $LLMDBENCH_VLLM_COMMON_NAMESPACE" ${LLMDBENCH_CONTROL_DRY_RUN} ${LLMDBENCH_CONTROL_VERBOSE}
+        announce "✅ FMA Helm release \"${hc}\" fully deleted."
+      done
+    fi
 
     if [[ $LLMDBENCH_CONTROL_DEPLOY_IS_OPENSHIFT -eq 1 ]]; then
       llmdbench_execute_cmd "${LLMDBENCH_CONTROL_KCMD} delete --namespace $tgtns --ignore-not-found=true route infra-${LLMDBENCH_VLLM_MODELSERVICE_RELEASE}-inference-gateway" ${LLMDBENCH_CONTROL_DRY_RUN} ${LLMDBENCH_CONTROL_VERBOSE}
