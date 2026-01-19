@@ -16,7 +16,6 @@ from functions import (
     announce,
     llmdbench_execute_cmd,
     model_attribute,
-    extract_environment,
     add_pull_secret,
     check_storage_class,
     check_accelerator,
@@ -34,8 +33,11 @@ from functions import (
     add_resources,
     add_accelerator,
     add_affinity,
+    add_fma_requester,
     clear_string,
     install_wva_components,
+    install_fma_dual_pod_components,
+    install_fma_launcher_populator_components,
     kube_connect,
     kubectl_apply,
     auto_detect_version,
@@ -241,6 +243,7 @@ prefill:
       {add_config("vllm_modelservice_prefill_extra_container_config", 6, "", ev).lstrip()}
     {conditional_volume_config("vllm_modelservice_prefill_extra_volume_mounts", "volumeMounts", 4, ev)}
   {conditional_volume_config("vllm_modelservice_prefill_extra_volumes", "volumes", 2, ev)}
+{add_fma_requester(ev)}
 """
 
     return clear_string(yaml_content)
@@ -410,6 +413,19 @@ def main():
       # Clean up temp file
       rules_file.unlink()
 
+      api, client = kube_connect(f'{ev["control_work_dir"]}/environment/context.ctx')
+      if ev.get("fma_enabled", False):
+          # Fast Model Actuation dual pod chart
+          install_fma_dual_pod_components(model, ev)
+          # Wait for fma dual pod to be created, running, and ready
+          api_client = client.CoreV1Api()
+          result = wait_for_pods_created_running_ready(
+              api_client, ev, 1, "fma_dual_pod"
+          )
+          if result != 0:
+              return result
+          announce(f'✅ FMA Dual Pod controler has been configured for Model "{model}".')
+
       # Deploy via helmfile
       announce(f'🚀 Installing helm chart "ms-{release}" via helmfile...')
       context_path = work_dir / "environment" / "context.ctx"
@@ -434,7 +450,6 @@ def main():
           f"✅ {ev['vllm_common_namespace']}-{ev['deploy_current_model_id_label']}-ms helm chart deployed successfully"
       )
 
-      api, client = kube_connect(f'{ev["control_work_dir"]}/environment/context.ctx')
       httproute_spec = define_httproute(ev, single_model = len([m for m in model_list if m.strip()]) == 1)
       with open(f'{ev["control_work_dir"]}/setup/yamls/{ev["current_step_nr"]}_httproute.yaml', "w") as f:
           f.write(httproute_spec)
@@ -448,7 +463,7 @@ def main():
       # Wait for decode pods to be created, running, and ready
       api_client = client.CoreV1Api()
       result = wait_for_pods_created_running_ready(
-          api_client, ev, expected_num_decode_pods, "decode"
+          api_client, ev, expected_num_decode_pods, "decode" if not ev.get("fma_enabled", False) else "requester-decode"
       )
       if result != 0:
           return result
@@ -523,6 +538,16 @@ def main():
           #
           install_wva_components(ev)
           announce(f'✅ WVA has been configured for Model "{model}".')
+
+      #if ev.get("fma_enabled", False):
+      #    install_fma_launcher_populator_components(model, ev)
+      #    # Wait for fma launcher populator to be created, running, and ready
+      #    result = wait_for_pods_created_running_ready(
+      #        api_client, ev, 1, "fma_launcher_populator"
+      #    )
+      #    if result != 0:
+      #        return result
+      #    announce(f'✅ FMA Launcher Populator has been configured for Model "{model}".')
 
       model_number += 1
 

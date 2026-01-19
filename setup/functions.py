@@ -1596,6 +1596,30 @@ def add_affinity(ev:dict) -> str:
 
     return affinity_string
 
+def add_fma_requester(ev:dict) -> str:
+
+    if not ev.get("fma_enabled", False):
+        return ""
+
+    # -- Requester configuration part of the dual-pod solution for FMA
+    requester_string = f"""
+requester:
+  enable: true
+  image: {ev['fma_requester_image_repository']}:{ev['fma_requester_image_tag']}
+  port:
+    probes: {ev['fma_requester_probe_port']}
+    spi: {ev['fma_requester_spi_port']}
+  readinessProbe:
+    initialDelaySeconds: {ev['fma_requester_readiness_probe_initial_delay']}
+    periodSeconds: {ev['fma_requester_readiness_probe_period']}
+  resources:
+    limits:
+      gpus: {ev['fma_requester_limits_gpu']}
+      cpus: {ev['fma_requester_limits_cpu']}
+      memory: {ev['fma_requester_limits_memory']}
+"""
+    return requester_string
+
 def add_accelerator(ev:dict, identifier: str = "decode") -> str:
 
     if ev[f"vllm_modelservice_{identifier}_accelerator_resource"] == "auto" :
@@ -1959,6 +1983,8 @@ def wait_for_pods_created_running_ready(api_client, ev: dict, component_nr: int,
     Wait for pods to be created, in Running state and then in Ready state.
     """
 
+    import pprint
+
     dry_run = ev["control_dry_run"]
     result = 0
     if component in [ "both", "decode", "prefill" ] :
@@ -1970,9 +1996,18 @@ def wait_for_pods_created_running_ready(api_client, ev: dict, component_nr: int,
     elif component in [ "inferencepool" ] :
         label_selector = f"inferencepool={ev['deploy_current_model_id_label']}-gaie-epp"
         silent = False
+    elif component in [ "requester-decode" ]:
+        label_selector = "app=dp-app"
+        silent = False
     elif component.count("testinference-pod") :
         label_selector = f"llm-d.ai/id={component}"
         silent = True
+    elif component.count("fma_dual_pod") :
+        label_selector = "app.kubernetes.io/name=dual-pods,app.kubernetes.io/component=controller"
+        silent = False
+    elif component.count("fma_launcher_populator") :
+        label_selector = "app.kubernetes.io/name=Launcher-populator,app.kubernetes.io/component=controller"
+        silent = False
     else :
         announce(f"ERROR: Unknown component ({component})")
         return 10
@@ -1992,6 +2027,9 @@ def wait_for_pods_created_running_ready(api_client, ev: dict, component_nr: int,
                 for event in w.stream(api_client.list_namespaced_pod, namespace=ev["vllm_common_namespace"], label_selector=label_selector, timeout_seconds=ev["control_wait_timeout"]):
                     pod = event['object']
                     event_type = event['type']
+                    if component in [ "requester-decode" ]:
+                        print("event_type: ", event_type)
+                        pprint.pprint(pod, indent=2)
                     if event_type in ("ADDED", "MODIFIED") and (pod.status.init_container_statuses or pod.status.container_statuses):
                         if pod.status.init_container_statuses and (len(pod_running_list) < component_nr):
                             for init_container_status in pod.status.init_container_statuses:
@@ -2789,6 +2827,46 @@ def install_wva(wva_config, wva_namespace, dry_run=False, verbose=False):
         verbose=verbose,
     )
 
+def install_fma_dual_pod(model: str, ev: dict, fma_config, dry_run=False, verbose=False):
+    tmp_out_dir = tempfile.mkdtemp()
+    fma_values_file = os.path.join(tmp_out_dir, "fma_dual_pod_config.yaml")
+
+    with open(fma_values_file, "w") as f:
+        yaml.dump(fma_config, f, sort_keys=False)
+
+    model_id_label = model_attribute(model, "modelid_label", ev)
+
+    announce(f'🚀 Installing helm chart "{model_id_label}-fma-dp" via helmfile...')
+    llmdbench_execute_cmd(
+        f"{ev['control_hcmd']} upgrade -i {model_id_label}-fma-dp "
+        f"{ev['fma_dual_pod_helm_repository_url']} "
+        f"--version {ev['fma_dual_pod_chart_version']} "
+        f"-n {ev['vllm_common_namespace']} "
+        f"-f {fma_values_file}",
+        dry_run=dry_run,
+        verbose=verbose,
+    )
+
+def install_fma_launcher_populator(model: str, ev: dict, fma_config, dry_run=False, verbose=False):
+    tmp_out_dir = tempfile.mkdtemp()
+    fma_values_file = os.path.join(tmp_out_dir, "fma_launcher_populator_config.yaml")
+
+    with open(fma_values_file, "w") as f:
+        yaml.dump(fma_config, f, sort_keys=False)
+
+    model_id_label = model_attribute(model, "modelid_label", ev)
+
+    announce(f'🚀 Installing helm chart "{model_id_label}-fma-lp" via helmfile...')
+    llmdbench_execute_cmd(
+        f"{ev['control_hcmd']} upgrade -i {model_id_label}-fma-lp "
+        f"{ev['fma_launcher_populator_helm_repository_url']} "
+        f"--version {ev['fma_launcher_populator_chart_version']} "
+        f"-n {ev['vllm_common_namespace']} "
+        f"-f {fma_values_file}",
+        dry_run=dry_run,
+        verbose=verbose,
+    )
+
 
 def install_wva_components(ev: dict):
     # Use pykube to connect to Kubernetes
@@ -2881,5 +2959,51 @@ def install_wva_components(ev: dict):
         dry_run=ev["control_dry_run"],
         verbose=ev["control_verbose"],
     )
+
+def install_fma_dual_pod_components(model: str, ev: dict):
+    config = {
+        "Image": f"{ev['fma_dual_pod_image_repository']}:{ev['fma_dual_pod_image_tag']}",
+        "Local": False,
+        "NodeViewClusterRole": f"{ev['fma_dual_pod_cluster_role']}",
+        "SleeperLimit": int(ev['fma_dual_pod_sleeper_limit']),
+        "DebugAcceleratorMemory": f"{ev['fma_dual_pod_debug_accelerator_memory']}",
+    }
+
+    install_fma_dual_pod(
+        model,
+        ev,
+        config,
+        dry_run=ev["control_dry_run"],
+        verbose=ev["control_verbose"],
+    )
+
+def install_fma_launcher_populator_components(model: str, ev: dict):
+    config = {
+        "image": {
+            "repository": f"{ev['fma_launcher_populator_image_repository']}",
+            "tag": f"{ev['fma_launcher_populator_image_tag']}",
+            "pullPolicy": "IfNotPresent",
+        },
+        "NodeViewClusterRole": f"{ev['fma_launcher_populator_cluster_role']}",
+        "resources": {
+            "limits": {
+                "cpu": f"{ev['fma_launcher_populator_limits_cpu']}",
+                "memory": f"{ev['fma_launcher_populator_limits_memory']}",
+            },
+            "requests": {
+                "cpu": f"{ev['fma_launcher_populator_requests_cpu']}",
+                "memory": f"{ev['fma_launcher_populator_requests_memory']}",
+            },
+        },
+    }
+
+    install_fma_launcher_populator(
+        model,
+        ev,
+        config,
+        dry_run=ev["control_dry_run"],
+        verbose=ev["control_verbose"],
+    )
+
 
 
