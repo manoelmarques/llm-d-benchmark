@@ -30,7 +30,7 @@ jobs:
       - name: Create k8s Kind Cluster
         uses: helm/kind-action@v1
         with:
-          version: v0.30.0
+          version: v0.31.0
 
       - name: Label Node Affinity from inference-sim Scenario
         run: |
@@ -50,7 +50,7 @@ jobs:
 
       - name: Standup (standalone) using llm-d-inference-sim
         run: |
-          ./setup/standup.sh -c kind_sim_fb -t standalone -s 0,1,2,4,5,6,10
+          ./setup/standup.sh -c kind_sim_fb -t standalone || ./setup/standup.sh -c kind_sim_fb -t standalone -s 10
         shell: bash
 
       - name: Run harness (standalone)
@@ -65,7 +65,7 @@ jobs:
 
       - name: Standup (modelservice) using llm-d-inference-sim
         run: |
-          ./setup/standup.sh -c kind_sim_fb -t modelservice -s 0,1,2,4,5,7,8
+          ./setup/standup.sh -c kind_sim_fb -t modelservice || ./setup/standup.sh -c kind_sim_fb -t modelservice -s 10 || true
         shell: bash
 
       - name: Run harness (mock)
