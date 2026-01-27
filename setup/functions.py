@@ -63,6 +63,9 @@ try:
         allocatable_kv_cache_memory,
         kv_cache_req,
         max_concurrent_requests,
+        estimate_vllm_activation_memory,
+        estimate_vllm_cuda_graph_memory,
+        estimate_vllm_non_torch_memory,
     )
 except ModuleNotFoundError as e:
     print(f"❌ ERROR: Failed to import config_explorer module: {e}")
@@ -2214,6 +2217,34 @@ def validate_vllm_params(
                 model_mem_req = model_memory_req(model_info, model_config)
                 announce(f"ℹ️ {model} requires {model_mem_req} GB of memory")
 
+                # Log intermediate memory components
+                if not skip_gpu_tests:
+                    announce("👉 Estimating intermediate memory requirements....")
+                    # Note: activation memory is constant per model type, not dependent on max_model_len
+                    activation_memory_per_gpu = estimate_vllm_activation_memory(
+                        model_config,
+                        tp=tp
+                    )
+                    cuda_graph_memory_per_gpu = estimate_vllm_cuda_graph_memory()
+                    non_torch_memory_per_gpu = estimate_vllm_non_torch_memory(tp)
+                    total_intermediate_per_gpu = activation_memory_per_gpu + cuda_graph_memory_per_gpu + non_torch_memory_per_gpu
+
+                    announce(
+                        f"ℹ️ Peak activation memory per GPU: {activation_memory_per_gpu:.2f} GB (constant per model type, not affected by max_model_len)"
+                    )
+                    announce(
+                        f"ℹ️ CUDA graph memory per GPU: {cuda_graph_memory_per_gpu:.2f} GB (included in activation profiling)"
+                    )
+                    announce(
+                        f"ℹ️ Non-torch memory (CUDA runtime, Python) per GPU: {non_torch_memory_per_gpu:.2f} GB"
+                    )
+                    announce(
+                        f"ℹ️ Total intermediate memory per GPU: {total_intermediate_per_gpu:.2f} GB"
+                    )
+                    announce(
+                        f"ℹ️ Total intermediate memory across {per_replica_requirement} GPUs: {total_intermediate_per_gpu * per_replica_requirement:.2f} GB"
+                    )
+
                 # Estimate KV cache memory and max number of requests that can be served in worst case scenario
                 if not skip_gpu_tests:
                     announce("👉 Estimating available KV cache....")
@@ -2223,23 +2254,110 @@ def validate_vllm_params(
                         gpu_memory,
                         gpu_memory_util,
                         tp=tp,
+                        pp=1,
                         dp=dp,
+                        max_model_len=max_model_len,
+                        batch_size=1,
                     )
+
+                    # Calculate KV cache requirement per request
+                    kv_details = KVCacheDetail(
+                        model_info, model_config, max_model_len, batch_size=1
+                    )
+                    per_request_kv_cache = kv_details.per_request_kv_cache_gb
 
                     if available_kv_cache < 0:
                         announce(
-                            f"{msgtag} There is not enough GPU memory to stand up model. Exceeds by {abs(available_kv_cache)} GB."
+                            f"❗ {msgtag} DEPLOYMENT WILL FAIL: Insufficient GPU memory to load model."
+                        )
+                        announce(
+                            f"{msgtag} The model requires {abs(available_kv_cache):.2f} GB MORE memory than available after loading model weights and activation memory."
+                        )
+                        announce(
+                            f"{msgtag} Current configuration:"
+                        )
+                        announce(
+                            f"{msgtag}   - GPU memory per device: {gpu_memory} GB"
+                        )
+                        announce(
+                            f"{msgtag}   - GPU memory utilization: {gpu_memory_util}"
+                        )
+                        announce(
+                            f"{msgtag}   - Max model length: {max_model_len}"
+                        )
+                        announce(
+                            f"{msgtag}   - Tensor parallelism (TP): {tp}"
+                        )
+                        announce(
+                            f"{msgtag}   - Data parallelism (DP): {dp}"
+                        )
+                        announce(
+                            f"{msgtag} Possible solutions:"
+                        )
+                        announce(
+                            f"{msgtag}   1. Reduce LLMDBENCH_VLLM_{env_var_prefix}_MAX_MODEL_LEN (currently {max_model_len})"
+                        )
+                        announce(
+                            f"{msgtag}   2. Increase LLMDBENCH_VLLM_{env_var_prefix}_TENSOR_PARALLELISM to use more GPUs"
+                        )
+                        announce(
+                            f"{msgtag}   3. Use GPUs with more memory"
+                        )
+                        announce(
+                            f"{msgtag}   4. Increase LLMDBENCH_VLLM_{env_var_prefix}_ACCELERATOR_MEM_UTIL (currently {gpu_memory_util}, but may cause OOM)"
+                        )
+                    elif available_kv_cache < per_request_kv_cache:
+                        announce(
+                            f"❗ {msgtag} DEPLOYMENT WILL FAIL: Model loads but cannot serve any requests."
+                        )
+                        announce(
+                            f"{msgtag} Available KV cache memory: {available_kv_cache:.2f} GB"
+                        )
+                        announce(
+                            f"{msgtag} Required per request (at max_model_len={max_model_len}): {per_request_kv_cache:.2f} GB"
+                        )
+                        announce(
+                            f"{msgtag} Deficit: {(per_request_kv_cache - available_kv_cache):.2f} GB"
+                        )
+                        announce(
+                            f"{msgtag} Current configuration:"
+                        )
+                        announce(
+                            f"{msgtag}   - GPU memory per device: {gpu_memory} GB"
+                        )
+                        announce(
+                            f"{msgtag}   - GPU memory utilization: {gpu_memory_util}"
+                        )
+                        announce(
+                            f"{msgtag}   - Max model length: {max_model_len}"
+                        )
+                        announce(
+                            f"{msgtag}   - Tensor parallelism (TP): {tp}"
+                        )
+                        announce(
+                            f"{msgtag}   - Data parallelism (DP): {dp}"
+                        )
+                        announce(
+                            f"{msgtag} Possible solutions:"
+                        )
+                        announce(
+                            f"{msgtag}   1. Reduce LLMDBENCH_VLLM_{env_var_prefix}_MAX_MODEL_LEN (currently {max_model_len})"
+                        )
+                        announce(
+                            f"{msgtag}   2. Increase LLMDBENCH_VLLM_{env_var_prefix}_TENSOR_PARALLELISM to use more GPUs"
+                        )
+                        announce(
+                            f"{msgtag}   3. Use GPUs with more memory"
+                        )
+                        announce(
+                            f"{msgtag}   4. Increase LLMDBENCH_VLLM_{env_var_prefix}_ACCELERATOR_MEM_UTIL (currently {gpu_memory_util}, but may cause OOM)"
                         )
                     else:
                         announce(
-                            f"ℹ️ Allocatable memory for KV cache {available_kv_cache} GB"
-                        )
-
-                        kv_details = KVCacheDetail(
-                            model_info, model_config, max_model_len, batch_size=1
+                            f"ℹ️ Allocatable memory for KV cache: {available_kv_cache:.2f} GB"
                         )
                         announce(
-                            f"ℹ️ KV cache memory for a request taking --max-model-len={max_model_len} requires {kv_details.per_request_kv_cache_gb} GB of memory"
+                            f"ℹ️ KV cache memory for a request taking --max-model-len={max_model_len} requires {per_request_kv_cache:.2f} GB of memory"
                         )
 
                         total_concurrent_reqs = max_concurrent_requests(
@@ -2248,7 +2366,9 @@ def validate_vllm_params(
                             max_model_len,
                             gpu_memory,
                             gpu_memory_util,
+                            batch_size=1,
                             tp=tp,
+                            pp=1,
                             dp=dp,
                         )
                         announce(
