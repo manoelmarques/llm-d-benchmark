@@ -73,6 +73,7 @@ function announce {
             echo -e "==> $(date) - ${0} - $message" >> ${logfile}
             ;;  
     esac
+
 }
 
 # Sanitize pod name to conform to Kubernetes naming conventions
@@ -398,6 +399,14 @@ set -e
 # Execute workloads
 # ========================================================
 set +e
+announce "ℹ️
+  Running benchmark with Experiment ID ${_uid}.
+  Results will be stored in PVC ${harness_results_pvc}.
+
+  Note: 
+    Benchmark will continue to run even on time-out or connection failure.
+    Can follow progress by checking the logs (${control_kubectl} logs -f ${_pod_name} -n ${harness_namespace}).
+"
 if [ "${harness_wait_timeout}" -eq 0 ]; then
   _timeout=""
 else
@@ -405,16 +414,17 @@ else
 fi
 yq '.workload | keys | .[]' "${_config_file}" |
   while IFS= read -r workload; do
-    announce "ℹ️ Running benchmark with workload ${workload}"
-    ${_timeout} $control_kubectl exec -i ${_pod_name} -- bash <<RUN_WORKLOAD
-# redirect to root fds so that kubectl logs can capture output
-exec 1> >(tee /proc/1/fd/1 >&1)
-exec 2> >(tee /proc/1/fd/2 >&2)
+    announce "ℹ️ Running benchmark with workload ${workload}."
+    IFS= read -r -d '' run_workload <<RUN_WORKLOAD
+      # redirect to root fds so that kubectl logs can capture output
+      exec 1> >(tee /proc/1/fd/1 >&1)
+      exec 2> >(tee /proc/1/fd/2 >&2)
 
-export LLMDBENCH_RUN_EXPERIMENT_ID="${_uid}_${workload}"
+      export LLMDBENCH_RUN_EXPERIMENT_ID="${_uid}_${workload}"
 
-${HARNESS_EXECUTABLE} --harness="${harness_name}" --workload="${workload}"
+      ${HARNESS_EXECUTABLE} --harness="${harness_name}" --workload="${workload}"
 RUN_WORKLOAD
+    ${_timeout} $control_kubectl exec -i ${_pod_name} -- bash -c "$run_workload"
     res=$?
     if [ $res -eq 0 ]; then
       announce "ℹ️ Benchmark workload ${workload} complete."
