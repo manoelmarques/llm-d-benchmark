@@ -243,65 +243,6 @@ function render_string {
 }
 export -f render_string
 
-function render_template {
-  local template_file_path=$1
-  local output_file_path=${2:-"none"}
-  local additional_replace_commands=${3:-"none"}
-  local cmdline_mode=${4:-0}
-  local env_var_mode=${5:-0}
-
-  rm -f $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
-  touch $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
-
-  if [[ $additional_replace_commands != "none" ]]; then
-    cat $additional_replace_commands >> $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
-  fi
-
-  for entry in $(cat ${template_file_path} | grep -v ^# | $LLMDBENCH_CONTROL_SCMD -e 's^-^\n^g' -e 's^:^\n^g' -e 's^ ^\n^g' -e 's^ ^^g' -e 's^\.^\n^g' -e 's^\/^\n^g' | grep -E "REPLACE_ENV" | uniq); do
-    render_string $entry &>/dev/null
-  done
-
-  echo "s^#.*^^g" >> $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
-  if [[ $cmdline_mode -eq 1 ]]; then
-    if [[ $LLMDBENCH_CURRENT_STEP == "06" ]]; then
-      echo "  - |"
-      local spacec=$(printf '%*s' 12 '')
-    fi
-
-    if [[ $LLMDBENCH_CURRENT_STEP == "09" ]]; then
-      echo "- |"
-      local spacec=$(printf '%*s' 8 '')
-    fi
-    echo "s^REPLACE_SPACESC^$spacec^g" >> $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
-    echo "s^ --^\\n$spacec--^g" >> $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
-    echo "s^\\n^ \\\\\n^g" >> $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
-    echo "s^REPLACE_COMMA^,^g" >> $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
-  fi
-
-  if [[ $env_var_mode -eq 1 ]]; then
-    if [[ $LLMDBENCH_CURRENT_STEP == "06" ]]; then
-      local spacec=$(printf '%*s' 8 '')
-    fi
-    if [[ $LLMDBENCH_CURRENT_STEP == "09" ]]; then
-      local spacec=$(printf '%*s' 6 '')
-    fi
-    echo "s^REPLACE_SPACESC^$spacec^g" >> $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
-  fi
-
-  if [[ $output_file_path != "none" ]]; then
-    cat ${template_file_path} | $LLMDBENCH_CONTROL_SCMD -f $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands > $output_file_path
-  fi
-
-  if [[ $cmdline_mode -eq 1 ]]; then
-    echo "REPLACE_SPACESC$(cat ${template_file_path})" | $LLMDBENCH_CONTROL_SCMD -f $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
-  fi
-
-  if [[ $env_var_mode -eq 1 ]]; then
-    echo "$(cat ${template_file_path} | $LLMDBENCH_CONTROL_SCMD -e 's^\^^REPLACE_SPACESC^g')" | $LLMDBENCH_CONTROL_SCMD -e '1s^REPLACE_SPACESC^^' | $LLMDBENCH_CONTROL_SCMD -f $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
-  fi
-}
-export -f render_template
-
 function not_valid_ip {
 
     local  ip=$1
@@ -483,7 +424,7 @@ function deploy_harness_config {
         fi
         announce "✅ All benchmark pods completed"
 
-        announce "🏗️ Collecting results for pods with label \"app=${LLMDBENCH_HARNESS_POD_LABEL}\"..."
+        announce "🏗️  Collecting results for pods with label \"app=${LLMDBENCH_HARNESS_POD_LABEL}\"..."
         for i in $(seq 1 "$LLMDBENCH_HARNESS_LOAD_PARALLELISM"); do
             # Per-pod directories
             pod_results_dir="${local_results_dir}_${i}"
@@ -504,6 +445,8 @@ function deploy_harness_config {
             if [[ -d ${pod_results_dir}/analysis && $LLMDBENCH_HARNESS_DEBUG -eq 0 && ${LLMDBENCH_HARNESS_WAIT_TIMEOUT} -ne 0 ]]; then
                 llmdbench_execute_cmd "$copy_analysis_cmd" ${LLMDBENCH_CONTROL_DRY_RUN} ${LLMDBENCH_CONTROL_VERBOSE}
             fi
+
+            upload_results ${pod_results_dir}
         done
         announce "✅ Collected results for pods with label \"app=${LLMDBENCH_HARNESS_POD_LABEL}\" at: \"${LLMDBENCH_CONTROL_WORK_DIR}/results/\""
         announce "✅ Collected analysis for pods with label \"app=${LLMDBENCH_HARNESS_POD_LABEL}\" at: \"${LLMDBENCH_CONTROL_WORK_DIR}/analysis/\""
@@ -537,13 +480,14 @@ function capture_pod_logs {
       pod_results_dir="${local_results_dir}_${i}"
       pod_analysis_dir="${local_analysis_dir}_${i}"
 
-      announce "ℹ️ Capturing the current status of all pods in namespace \"$LLMDBENCH_VLLM_COMMON_NAMESPACE\" to ${pod_results_dir}/pod_status.txt ..."
+      announce "🏗️ Capturing the current status of all pods in namespace \"$LLMDBENCH_VLLM_COMMON_NAMESPACE\" to ${pod_results_dir}/pod_status.txt ..."
       llmdbench_execute_cmd "${LLMDBENCH_CONTROL_KCMD} --namespace $LLMDBENCH_VLLM_COMMON_NAMESPACE get pods -o wide > ${pod_results_dir}/pod_status.txt" \
       ${LLMDBENCH_CONTROL_DRY_RUN} \
       ${LLMDBENCH_CONTROL_VERBOSE}
-      announce "✅ Pod status captured."
+      announce "✅ Pod status captured to \"${pod_results_dir}/pod_status.txt\""
 
-      announce "ℹ️ Capturing logs for all pods in namespace \"$LLMDBENCH_VLLM_COMMON_NAMESPACE\" to ${pod_results_dir}/logs/ ..."
+      announce "🏗️ Capturing logs for all pods in namespace \"$LLMDBENCH_VLLM_COMMON_NAMESPACE\" to ${pod_results_dir}/logs/ ..."
+
       mkdir -p ${pod_results_dir}/logs/
       llmdbench_execute_cmd "${LLMDBENCH_CONTROL_KCMD} --namespace $LLMDBENCH_VLLM_COMMON_NAMESPACE logs --tail=-1 --prefix=true -l llm-d.ai/model=\"$modelid_label\" > ${pod_results_dir}/logs/modelserving_pods.log"  \
       ${LLMDBENCH_CONTROL_DRY_RUN} \
@@ -556,6 +500,7 @@ function capture_pod_logs {
       llmdbench_execute_cmd "${LLMDBENCH_CONTROL_KCMD} --namespace $LLMDBENCH_VLLM_COMMON_NAMESPACE logs --tail=-1 --prefix=true -l \"app.kubernetes.io/component=inference-gateway\" > ${pod_results_dir}/logs/igw_pods.log"  \
       ${LLMDBENCH_CONTROL_DRY_RUN} \
       ${LLMDBENCH_CONTROL_VERBOSE}
+      announce "✅ Pod logs captured to \"${pod_results_dir}/logs/\""
     done
 }
 export -f capture_pod_logs
@@ -956,3 +901,136 @@ function user_has_hf_model_access {
     case "$http_code" in 200) return 0 ;; 401|403) return 1 ;; *) return 2 ;; esac
 }
 export -f user_has_hf_model_access
+
+function verify_output_destination {
+  local _output_destination=$1
+  if [[ ${_output_destination} == "local" ]]; then
+    export LLMDBENCH_HARNESS_OUTPUT_STORAGE_TYPE=local
+    return 0
+  else
+    if [[ "${_output_destination}" == *"://"* ]]; then
+      _storage_type="cloud"
+      _scheme=$(echo "${_output_destination}" | cut -d: -f1)
+      _bucket=$(echo "${_output_destination}" | cut -d ':' -f 2 | $LLMDBENCH_CONTROL_SCMD -e 's^//^^g' -e 's:/*$::')
+      case "${_scheme}" in
+        gs)
+          export LLMDBENCH_HARNESS_OUTPUT_STORAGE_TYPE=gs
+          announce "ℹ️  Verifying GCS output destination..."
+          if ! command -v gcloud &> /dev/null; then
+            announce "❌ 'gcloud' command not found, but is required for 'gs://' output."
+            exit 1
+          else
+            is_bucket=$(gcloud storage buckets list | grep ${_bucket} || true)
+          fi
+          ;;
+        s3)
+          export LLMDBENCH_HARNESS_OUTPUT_STORAGE_TYPE=s3
+          announce "ℹ️  Verifying S3 output destination..."
+          if ! command -v aws &> /dev/null; then
+            announce "❌ 'aws' command not found, but is required for 's3://' output."
+            exit 1
+          else
+            is_bucket=$(aws s3 ls | grep ${_bucket} || true)
+          fi
+          ;;
+        *)
+          announce "❌ ERROR: Unsupported cloud provider scheme '${_scheme}' for destination '${_output_destination}'."
+          exit 1
+          ;;
+      esac
+
+      if [[ -z $is_bucket ]]; then
+        announce "❌ ERROR: Bucket \"${_bucket}\" ('${_output_destination}') not found."
+        exit1 1
+      else
+        announce "✅ Output destination verified\""
+      fi
+    fi
+  fi
+}
+export -f verify_output_destination
+
+function upload_results {
+  local local_results_dir=$1
+  local remote_results_dir=$(echo $local_results_dir | $LLMDBENCH_CONTROL_SCMD -e "s^$LLMDBENCH_CONTROL_WORK_DIR/results/^^g")
+
+  if [[ "${LLMDBENCH_HARNESS_OUTPUT_STORAGE_TYPE}" == "local" ]]; then
+    return 0
+  fi
+  case ${LLMDBENCH_HARNESS_OUTPUT_STORAGE_TYPE} in
+    gs)
+      announce "☁️  Uploading results to GCS bucket ${LLMDBENCH_HARNESS_OUTPUT}"
+      gcloud storage cp --recursive "${local_results_dir}/" "${LLMDBENCH_HARNESS_OUTPUT}/${remote_results_dir}/"
+      ;;
+    s3)
+      announce "☁️  Uploading results to S3 bucket ${LLMDBENCH_HARNESS_OUTPUT}"
+      aws s3 cp --recursive "${local_results_dir}/" "${LLMDBENCH_HARNESS_OUTPUT}/${remote_results_dir}/"
+      ;;
+    local)
+      announce "ℹ️ Results saved to local folder."
+      ;;
+    *)
+      announce "❌ ERROR: unknown or unsupported storage provider \"${LLMDBENCH_HARNESS_OUTPUT_STORAGE_TYPE}\"."
+      exit 1
+      ;;
+  esac
+}
+
+function render_template {
+  local template_file_path=$1
+  local output_file_path=${2:-"none"}
+  local additional_replace_commands=${3:-"none"}
+  local cmdline_mode=${4:-0}
+  local env_var_mode=${5:-0}
+
+  rm -f $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
+  touch $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
+
+  if [[ $additional_replace_commands != "none" ]]; then
+    cat $additional_replace_commands >> $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
+  fi
+
+  for entry in $(cat ${template_file_path} | grep -v ^# | $LLMDBENCH_CONTROL_SCMD -e 's^-^\n^g' -e 's^:^\n^g' -e 's^ ^\n^g' -e 's^ ^^g' -e 's^\.^\n^g' -e 's^\/^\n^g' | grep -E "REPLACE_ENV" | uniq); do
+    render_string $entry &>/dev/null
+  done
+
+  echo "s^#.*^^g" >> $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
+  if [[ $cmdline_mode -eq 1 ]]; then
+    if [[ $LLMDBENCH_CURRENT_STEP == "06" ]]; then
+      echo "  - |"
+      local spacec=$(printf '%*s' 12 '')
+    fi
+
+    if [[ $LLMDBENCH_CURRENT_STEP == "09" ]]; then
+      echo "- |"
+      local spacec=$(printf '%*s' 8 '')
+    fi
+    echo "s^REPLACE_SPACESC^$spacec^g" >> $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
+    echo "s^ --^\\n$spacec--^g" >> $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
+    echo "s^\\n^ \\\\\n^g" >> $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
+    echo "s^REPLACE_COMMA^,^g" >> $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
+  fi
+
+  if [[ $env_var_mode -eq 1 ]]; then
+    if [[ $LLMDBENCH_CURRENT_STEP == "06" ]]; then
+      local spacec=$(printf '%*s' 8 '')
+    fi
+    if [[ $LLMDBENCH_CURRENT_STEP == "09" ]]; then
+      local spacec=$(printf '%*s' 6 '')
+    fi
+    echo "s^REPLACE_SPACESC^$spacec^g" >> $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
+  fi
+
+  if [[ $output_file_path != "none" ]]; then
+    cat ${template_file_path} | $LLMDBENCH_CONTROL_SCMD -f $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands > $output_file_path
+  fi
+
+  if [[ $cmdline_mode -eq 1 ]]; then
+    echo "REPLACE_SPACESC$(cat ${template_file_path})" | $LLMDBENCH_CONTROL_SCMD -f $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
+  fi
+
+  if [[ $env_var_mode -eq 1 ]]; then
+    echo "$(cat ${template_file_path} | $LLMDBENCH_CONTROL_SCMD -e 's^\^^REPLACE_SPACESC^g')" | $LLMDBENCH_CONTROL_SCMD -e '1s^REPLACE_SPACESC^^' | $LLMDBENCH_CONTROL_SCMD -f $LLMDBENCH_CONTROL_WORK_DIR/setup/sed-commands
+  fi
+}
+export -f render_template
