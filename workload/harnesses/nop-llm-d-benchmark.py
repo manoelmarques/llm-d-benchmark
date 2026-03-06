@@ -5,6 +5,7 @@ Benchmark 'nop' harness
 """
 
 from __future__ import annotations
+from abc import ABC, abstractmethod
 import ast
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
@@ -51,7 +52,7 @@ DEFINED_CATEGORIES = [
     },
     {
         "title": "Get Model Info",
-        "start": "vLLM API server version",
+        "start": "vLLM API server version| version ",
         "end": "Using max model len",
     },
     {
@@ -92,6 +93,82 @@ DEFINED_CATEGORIES = [
         "end": "Route: /metrics",
     },
 ]
+
+
+@dataclass(frozen=True)
+class VllmLogs(ABC):
+    """Abstract class for vllm logs request"""
+
+    @abstractmethod
+    def get_logs(self) -> str:
+        """get logs"""
+
+
+@dataclass(frozen=True)
+class VllmPodLogs(VllmLogs):
+    """vllm pod logs"""
+
+    v1: client.CoreV1Api
+    namespace: str
+    pod_name: str
+    container_name: str
+
+    def get_logs(self) -> str:
+        """get pod logs"""
+
+        response = self.v1.read_namespaced_pod_log(
+            name=self.pod_name,
+            container=self.container_name,
+            namespace=self.namespace,
+            pretty=False,
+            _preload_content=False,
+        )
+        return response.data.decode("utf-8")
+
+
+@dataclass(frozen=True)
+class VllmLaunchedLogs(VllmLogs):
+    """vllm launched logs"""
+
+    base_url: str
+    instance_id: str
+    timeout: float
+
+    def get_logs(self) -> str:
+        """get launched vllm logs"""
+
+        log_str = ""
+        url = urljoin(self.base_url, f"/v2/vllm/instances/{self.instance_id}/log")
+        start_byte = 0
+        while True:
+            params = {
+                "start_byte": start_byte,
+            }
+            response = requests.get(url, params=params, timeout=self.timeout)
+            if response.status_code != 200:
+                logger.info(
+                    "launcher url '%s' options '%s' error code %d: '%s'.",
+                    url,
+                    params,
+                    response.status_code,
+                    response.text,
+                )
+                break
+            data = response.json()
+            log = data.get("log")
+            if log is None or len(log) == 0:
+                logger.info(
+                    "launcher url '%s' options '%s' log json: '%s'.",
+                    url,
+                    params,
+                    json.dumps(data),
+                )
+                break
+
+            log_str += log
+            start_byte += len(log.encode("utf-8"))
+
+        return log_str
 
 
 @dataclass
@@ -803,21 +880,6 @@ def get_pod_infos(v1: client.CoreV1Api, namespace: str, selector: str) -> list[P
     return pod_infos
 
 
-def get_pod_logs(
-    v1: client.CoreV1Api, namespace: str, pod_name: str, container_name: str
-) -> bytes:
-    """get pod logs"""
-
-    response = v1.read_namespaced_pod_log(
-        name=pod_name,
-        container=container_name,
-        namespace=namespace,
-        pretty=False,
-        _preload_content=False,
-    )
-    return response.data
-
-
 def extract_datetime(log_line: str) -> datetime | None:
     """extracts datetime"""
 
@@ -1461,7 +1523,7 @@ def stop_vllm_server(base_url: str, instance_id, timeout: float) -> None:
         )
 
 
-def get_vllm_server_status(base_url: str, timeout: float) -> bool:
+def get_vllm_server_instance(base_url: str, timeout: float) -> str | None:
     """stop vllm server"""
 
     url = urljoin(base_url, "v2/vllm/instances")
@@ -1480,12 +1542,13 @@ def get_vllm_server_status(base_url: str, timeout: float) -> bool:
         running_instances,
     )
 
+    instance_id = None
     for instance_status in instances:
         status = instance_status.get("status")
         instance_id = instance_status.get("instance_id")
         logger.info("launcher vllm server instance: %s status: %s", instance_id, status)
 
-    return running_instances > 0
+    return instance_id
 
 
 def wait_for_launcher(base_url: str, timeout: float) -> None:
@@ -1549,10 +1612,7 @@ def wait_for_vllm(base_url: str, timeout: float) -> None:
 
 def populate_benchmark(
     name: str,
-    v1: client.CoreV1Api,
-    namespace: str,
-    pod_name: str,
-    container_name: str,
+    vllm_logs: VllmLogs,
     load_format: LoadFormat,
     base_url: str,
     benchmark_result: BenchmarkResult,
@@ -1570,8 +1630,7 @@ def populate_benchmark(
     metrics.name = name
     benchmark_result.metrics.append(metrics)
 
-    pod_logs = get_pod_logs(v1, namespace, pod_name, container_name)
-    pod_logs_str = pod_logs.decode("utf-8")
+    pod_logs_str = vllm_logs.get_logs()
     if parse_gpus:
         parse_gpu_logs(benchmark_result.scenario, pod_logs_str)
 
@@ -1586,8 +1645,7 @@ def populate_benchmark(
         sleep(base_url, 1, REQUEST_TIMEOUT)
         wake(base_url, REQUEST_TIMEOUT)
         # get logs again with latest sleep/wake statistics
-        pod_logs = get_pod_logs(v1, namespace, pod_name, container_name)
-        pod_logs_str = pod_logs.decode("utf-8")
+        pod_logs_str = vllm_logs.get_logs()
         parse_logs(
             benchmark_result.scenario,
             engine,
@@ -1613,7 +1671,7 @@ def populate_benchmark(
     # write vllm log file
     logs_filepath = os.path.join(output_dir, "vllm.log")
     with open(logs_filepath, "wb") as file:
-        file.write(pod_logs)
+        file.write(pod_logs_str.encode("utf-8"))
         logger.info("%s: vllm log file saved to path: %s", metrics.name, logs_filepath)
 
     if write_log_per_process:
@@ -1716,10 +1774,7 @@ def main():
     try:
         populate_benchmark(
             benchmark_name,
-            v1,
-            namespace,
-            pod_info.name,
-            pod_info.containers[0].name,
+            VllmPodLogs(v1, namespace, pod_info.name, pod_info.containers[0].name),
             load_format,
             endpoint_url,
             benchmark_result,
@@ -1737,25 +1792,26 @@ def main():
         try:
             logger.info("Benchmark launcher start...")
             wait_for_launcher(endpoint_launcher_url, REQUEST_TIMEOUT)
-            if not get_vllm_server_status(endpoint_launcher_url, REQUEST_TIMEOUT):
+            instance_id = get_vllm_server_instance(
+                endpoint_launcher_url, REQUEST_TIMEOUT
+            )
+            if instance_id is None:
                 # grab vLLM arguments from standalone
                 args = convert_vllm_args(
                     benchmark_result.scenario.platform.engines[0].args,
                     launcher_vllm_port,
                 )
                 # start vLLM server
-                _ = start_vllm_server(
+                instance_id = start_vllm_server(
                     endpoint_launcher_url,
                     args,
                     REQUEST_TIMEOUT,
                 )
                 wait_for_vllm(endpoint_launcher_vllm_url, REQUEST_TIMEOUT)
+
             populate_benchmark(
                 benchmark_name,
-                v1,
-                namespace,
-                pod_info.name,
-                pod_info.containers[1].name,
+                VllmLaunchedLogs(endpoint_launcher_url, instance_id, REQUEST_TIMEOUT),
                 load_format,
                 endpoint_launcher_vllm_url,
                 benchmark_result,
