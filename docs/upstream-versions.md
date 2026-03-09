@@ -11,6 +11,8 @@
 
 | Dependency | Current Pin | Pin Type | File Location | Upstream Repo |
 |-----------|-------------|----------|---------------|---------------|
+<!-- | **example-lib** | `v1.2.3` | tag | `go.mod` line 10 | example-org/example-lib | -->
+=======
 | **llm-d-modelservice** | `auto` | floating (chart) | `setup/env.sh` (`LLMDBENCH_VLLM_MODELSERVICE_CHART_VERSION`) | [llm-d-incubation/llm-d-modelservice](https://github.com/llm-d-incubation/llm-d-modelservice) |
 | **llm-d-infra** | `v1.3.8` | chart version | `setup/env.sh` (`LLMDBENCH_VLLM_INFRA_CHART_VERSION`) | [llm-d-incubation/llm-d-infra](https://github.com/llm-d-incubation/llm-d-infra) |
 | **GAIE InferencePool** | `v1.3.0` | chart version | `setup/env.sh` (`LLMDBENCH_VLLM_GAIE_CHART_VERSION`) | [kubernetes-sigs/gateway-api-inference-extension](https://github.com/kubernetes-sigs/gateway-api-inference-extension) |
@@ -70,7 +72,7 @@
 
 | Dependency | Current Pin | Pin Type | File Location | Upstream Repo |
 |-----------|-------------|----------|---------------|---------------|
-| **yq** | `v4.45.4` | release tag | `setup/install_deps.sh` (`install_yq_linux`) | [mikefarah/yq](https://github.com/mikefarah/yq) |
+| **yq** | `v4.45.5` | release tag | `setup/install_deps.sh` (`install_yq_linux`) | [mikefarah/yq](https://github.com/mikefarah/yq) |
 | **helmfile** | `v1.1.3` | release tag | `setup/install_deps.sh` (`install_helmfile_linux`) | [helmfile/helmfile](https://github.com/helmfile/helmfile) |
 | **helm** | `latest` | floating | `setup/install_deps.sh` (`install_helm_linux`) | [helm/helm](https://github.com/helm/helm) |
 | **kubectl** | `stable` | floating | `build/Dockerfile` | [kubernetes/kubernetes](https://github.com/kubernetes/kubernetes) |
