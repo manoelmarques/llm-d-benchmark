@@ -8,6 +8,12 @@
 # All parameters not defined here or exported externally will be the default values found in setup/env.sh
 # Many commonly defined values were left blank (default) so that this scenario is applicable to as many environments as possible.
 
+# harness image
+export LLMDBENCH_IMAGE_REGISTRY=quay.io
+export LLMDBENCH_IMAGE_REPO=manoelmrqs
+export LLMDBENCH_IMAGE_NAME=llm-d-benchmark
+export LLMDBENCH_IMAGE_TAG=0.0.1
+
 # Model parameters
 #export LLMDBENCH_DEPLOY_MODEL_LIST="Qwen/Qwen3-0.6B"
 export LLMDBENCH_DEPLOY_MODEL_LIST="Qwen/Qwen3-32B"
