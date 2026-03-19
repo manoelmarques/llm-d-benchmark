@@ -300,6 +300,16 @@ for method in ${LLMDBENCH_DEPLOY_METHODS//,/ }; do
         export LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_VLLM_PORT=82
       fi
 
+      if [[ $LLMDBENCH_CONTROL_ENVIRONMENT_TYPE_FMA_ACTIVE -eq 1 ]]; then
+        export LLMDBENCH_CONTROL_ENV_VAR_LIST_TO_POD="LLMDBENCH_RUN_EXPERIMENT|LLMDBENCH_BASE64_CONTEXT_CONTENTS|^LLMDBENCH_VLLM_COMMON|^LLMDBENCH_FMA|^LLMDBENCH_DEPLOY|^LLMDBENCH_HARNESS|^LLMDBENCH_RUN"
+        export LLMDBENCH_HARNESS_STACK_TYPE=vllm-prod
+        export LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME=$(${LLMDBENCH_CONTROL_KCMD} --namespace "$LLMDBENCH_VLLM_COMMON_NAMESPACE" get service --no-headers -l stood-up-via=${LLMDBENCH_DEPLOY_METHODS} | awk '{print $1}' || true)
+        export LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME=${LLMDBENCH_HARNESS_STACK_ENDPOINT_NAME}${LLMDBENCH_VLLM_FQDN}
+        export LLMDBENCH_HARNESS_STACK_ENDPOINT_PORT=80
+        export LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_PORT=0
+        export LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_VLLM_PORT=0
+      fi
+
       if [[ $LLMDBENCH_CONTROL_ENVIRONMENT_TYPE_MODELSERVICE_ACTIVE -eq 1 ]]; then
         export LLMDBENCH_CONTROL_ENV_VAR_LIST_TO_POD="LLMDBENCH_RUN_EXPERIMENT|LLMDBENCH_BASE64_CONTEXT_CONTENTS|^LLMDBENCH_VLLM_COMMON|^LLMDBENCH_VLLM_MODELSERVICE|^LLMDBENCH_DEPLOY|^LLMDBENCH_VLLM_INFRA|^LLMDBENCH_VLLM_GAIE|^LLMDBENCH_LLMD_IMAGE|^LLMDBENCH_HARNESS|^LLMDBENCH_RUN"
         export LLMDBENCH_HARNESS_STACK_TYPE=llm-d
@@ -319,9 +329,9 @@ for method in ${LLMDBENCH_DEPLOY_METHODS//,/ }; do
         export LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_VLLM_PORT=82
       fi
 
-      if [[ $LLMDBENCH_CONTROL_ENVIRONMENT_TYPE_STANDALONE_ACTIVE -eq 0 && $LLMDBENCH_CONTROL_ENVIRONMENT_TYPE_MODELSERVICE_ACTIVE -eq 0 ]]; then
+      if [[ $LLMDBENCH_CONTROL_ENVIRONMENT_TYPE_STANDALONE_ACTIVE -eq 0 && $LLMDBENCH_CONTROL_ENVIRONMENT_TYPE_MODELSERVICE_ACTIVE -eq 0 && $LLMDBENCH_CONTROL_ENVIRONMENT_TYPE_FMA_ACTIVE -eq 0 ]]; then
         export LLMDBENCH_CONTROL_ENV_VAR_LIST_TO_POD="LLMDBENCH_RUN_EXPERIMENT|LLMDBENCH_BASE64_CONTEXT_CONTENTS|^LLMDBENCH_VLLM_COMMON_NAMESPACE|^LLMDBENCH_DEPLOY_CURRENT|^LLMDBENCH_HARNESS|^LLMDBENCH_RUN"
-        announce "⚠️ Deployment method - $LLMDBENCH_DEPLOY_METHODS - is neither \"standalone\" nor \"modelservice\". "
+        announce "⚠️ Deployment method - $LLMDBENCH_DEPLOY_METHODS - is neither \"standalone\" nor \"modelservice\" nor \"fma\". "
 
         announce "🔍 Trying to find a matching endpoint name on namespace ($LLMDBENCH_VLLM_COMMON_NAMESPACE)..."
 
@@ -414,28 +424,31 @@ for method in ${LLMDBENCH_DEPLOY_METHODS//,/ }; do
       if [[ $LLMDBENCH_CONTROL_DRY_RUN -eq 1 ]]; then
         announce "ℹ️ Stack model detected is \"mock\""
       else
+        if [[ $LLMDBENCH_CONTROL_ENVIRONMENT_TYPE_FMA_ACTIVE -eq 1 ]]; then
+          announce "ℹ️ Stack model not needed for \"fma\""
+        else
+          set +euo pipefail
+          received_model_name=$(get_model_name_from_pod $LLMDBENCH_VLLM_COMMON_NAMESPACE $(get_image ${LLMDBENCH_IMAGE_REGISTRY} ${LLMDBENCH_IMAGE_REPO} ${LLMDBENCH_IMAGE_NAME} ${LLMDBENCH_IMAGE_TAG}) ${LLMDBENCH_HARNESS_STACK_ENDPOINT_URL} NA)
+          set -euo pipefail
 
-        set +euo pipefail
-        received_model_name=$(get_model_name_from_pod $LLMDBENCH_VLLM_COMMON_NAMESPACE $(get_image ${LLMDBENCH_IMAGE_REGISTRY} ${LLMDBENCH_IMAGE_REPO} ${LLMDBENCH_IMAGE_NAME} ${LLMDBENCH_IMAGE_TAG}) ${LLMDBENCH_HARNESS_STACK_ENDPOINT_URL} NA)
-        set -euo pipefail
+          if [[ $LLMDBENCH_DEPLOY_CURRENT_MODEL == "auto" ]]; then
+            if [[ -z $received_model_name ]]; then
+              announce "❌ Unable to detect stack model!"
+              exit 1
+            fi
 
-        if [[ $LLMDBENCH_DEPLOY_CURRENT_MODEL == "auto" ]]; then
-          if [[ -z $received_model_name ]]; then
-            announce "❌ Unable to detect stack model!"
+            export LLMDBENCH_DEPLOY_CURRENT_MODEL=$received_model_name
+            export LLMDBENCH_DEPLOY_CURRENT_MODELID=$(model_attribute $LLMDBENCH_DEPLOY_CURRENT_MODEL modelid)
+            export LLMDBENCH_HARNESS_STACK_NAME=$(echo ${method} | $LLMDBENCH_CONTROL_SCMD 's^modelservice^llm-d^g')-$(model_attribute $LLMDBENCH_DEPLOY_CURRENT_MODEL parameters)-$(model_attribute $LLMDBENCH_DEPLOY_CURRENT_MODEL modeltype)
+            export LLMDBENCH_DEPLOY_CURRENT_TOKENIZER=$(model_attribute $LLMDBENCH_DEPLOY_CURRENT_MODEL model)
+
+            announce "ℹ️ Stack model detected is \"$received_model_name\""
+          elif [[ ${received_model_name} == ${LLMDBENCH_DEPLOY_CURRENT_MODEL} ]]; then
+            announce "ℹ️ Stack model detected is \"$received_model_name\", matches requested \"$LLMDBENCH_DEPLOY_CURRENT_MODEL\""
+          else
+            announce "❌ Stack model detected is \"$received_model_name\" (instead of $LLMDBENCH_DEPLOY_CURRENT_MODEL)!"
             exit 1
           fi
-
-          export LLMDBENCH_DEPLOY_CURRENT_MODEL=$received_model_name
-          export LLMDBENCH_DEPLOY_CURRENT_MODELID=$(model_attribute $LLMDBENCH_DEPLOY_CURRENT_MODEL modelid)
-          export LLMDBENCH_HARNESS_STACK_NAME=$(echo ${method} | $LLMDBENCH_CONTROL_SCMD 's^modelservice^llm-d^g')-$(model_attribute $LLMDBENCH_DEPLOY_CURRENT_MODEL parameters)-$(model_attribute $LLMDBENCH_DEPLOY_CURRENT_MODEL modeltype)
-          export LLMDBENCH_DEPLOY_CURRENT_TOKENIZER=$(model_attribute $LLMDBENCH_DEPLOY_CURRENT_MODEL model)
-
-          announce "ℹ️ Stack model detected is \"$received_model_name\""
-        elif [[ ${received_model_name} == ${LLMDBENCH_DEPLOY_CURRENT_MODEL} ]]; then
-          announce "ℹ️ Stack model detected is \"$received_model_name\", matches requested \"$LLMDBENCH_DEPLOY_CURRENT_MODEL\""
-        else
-          announce "❌ Stack model detected is \"$received_model_name\" (instead of $LLMDBENCH_DEPLOY_CURRENT_MODEL)!"
-          exit 1
         fi
       fi
 

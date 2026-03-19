@@ -25,7 +25,8 @@ from functions import announce, \
         get_model_name_from_pod, \
         get_image, \
         kubectl_get, \
-        kube_connect
+        kube_connect, \
+        is_fma_deployment
 
 # ---------------- Helpers ----------------
 
@@ -223,7 +224,7 @@ def check_deployment_fma(api: pykube.HTTPClient, client: any, ev: dict) -> int:
     announce("🔍 Checking if current FMA deployment was successful...")
     dry_run = ev["control_dry_run"]
 
-    pod_string = "decode"
+    pod_string = "requester"
 
     rc = 0
     model_list = ev.get("deploy_model_list", "").replace(",", " ").split()
@@ -233,8 +234,8 @@ def check_deployment_fma(api: pykube.HTTPClient, client: any, ev: dict) -> int:
             announce(f"✅ [DRY RUN] FMA deployment successfull ({current_model})")
             continue
 
-        current_model_id_label = model_attribute(model, "modelid_label", ev)
-        label_sel = f"llm-d.ai/model={current_model_id_label},llm-d.ai/role={pod_string}"
+        model_label = model_attribute(model, "label", ev)
+        label_sel = f"llm-d.ai/model={model_label},llm-d.ai/role={pod_string}"
         requester_pods = \
             client.CoreV1Api().list_namespaced_pod(namespace=ev["vllm_common_namespace"],
                                                     label_selector=label_sel)
@@ -276,8 +277,9 @@ def check_deployment_fma(api: pykube.HTTPClient, client: any, ev: dict) -> int:
                 launcher_pod = \
                     client.CoreV1Api().read_namespaced_pod(name=launcher_pod_name,
                                                            namespace=ev["vllm_common_namespace"])
-                announce(f"✅ Requester pod {requester_pod_name} connected to vLLM server "
-                         f"at http://{launcher_pod.status.pod_ip}:{port}")
+                announce(f"✅ Requester pod {requester_pod_name} connected to "
+                         f"Launchar pod {launcher_pod_name} "
+                         f"vLLM server at http://{launcher_pod.status.pod_ip}:{port}")
             except client.ApiException as e:
                 announce(f"ERROR: Unable to find a launcher pod '{launcher_pod_name}' "
                          f"for requester pod: '{requester_pod_name}': {e}")
@@ -302,7 +304,7 @@ def main():
     api, client = kube_connect(f'{ev["control_work_dir"]}/environment/context.ctx')
 
     # Execute the main logic
-    if ev.get("fma_enabled", False):
+    if is_fma_deployment(ev):
         return check_deployment_fma(api, client, ev)
 
     return check_deployment(api, client, ev)

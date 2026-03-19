@@ -25,6 +25,7 @@ import requests
 import yaml
 
 from kubernetes import client, config
+from kubernetes.client.exceptions import ApiException
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -321,16 +322,16 @@ class BenchmarkCategory:
                     category.start.log_line is not None
                     and category.end.log_line is not None
                 ):
-                    procs = [
-                        category.start.log_line.process_desc(),
-                        category.end.log_line.process_desc(),
-                    ]
-                    if procs[0] != procs[1]:
-                        raise ValueError(
-                            f"Category '{category.title}': "
-                            f"start process '{procs[0]}' must be "
-                            f"the same as end process '{procs[1]}'"
-                        )
+                    # procs = [
+                    #    category.start.log_line.process_desc(),
+                    #    category.end.log_line.process_desc(),
+                    # ]
+                    # if procs[0] != procs[1]:
+                    #    raise ValueError(
+                    #        f"Category '{category.title}': "
+                    #        f"start process '{procs[0]}' must be "
+                    #        f"the same as end process '{procs[1]}'"
+                    #    )
                     if category.start.log_line.process is not None:
                         dump_dict["process"] = category.start.log_line.process.dump()
                     elif category.end.log_line.process is not None:
@@ -700,21 +701,21 @@ class BenchmarkResult:
         return dump_dict
 
 
-def get_env_variables(keys: list[str]) -> list[str]:
+def get_env_variables(keys: list[str]) -> dict[str, str]:
     """get environment variables"""
 
     logger.info("Environment variables:")
 
     env_vars = os.environ
 
-    envs = []
+    envs = {}
     missing_envs = []
     for key in keys:
         value = env_vars.get(key)
         if value is None:
             missing_envs.append(key)
         else:
-            envs.append(value)
+            envs[key] = value
             logger.info("  '%s': '%s'", key, value)
 
     if len(missing_envs) > 0:
@@ -1139,6 +1140,30 @@ def parse_gpu_logs(scenario: BenchmarkScenario, logs: str) -> None:
         scenario.gpus.append(gpu_scenario)
 
 
+def convert_objects_to_dict(s: str):
+    """
+    Converts a string representation of a dict with internal Python objects
+    into a real dict, replacing objects with {ClassName: args_dict}.
+    """
+    # Regex to match ClassName(...) including nested parentheses
+    pattern = re.compile(r"(\w+)\((.*?)\)", re.DOTALL)
+
+    def replacer(match):
+        class_name = match.group(1)
+        args = match.group(2).strip()
+        # Use repr() to safely escape any quotes inside the arguments
+        return f"{{'{class_name}': {repr(args)}}}"
+
+    # Keep replacing until no more matches (handles nested objects)
+    prev_s = None
+    while prev_s != s:
+        prev_s = s
+        s = pattern.sub(replacer, s)
+
+    # Now safely evaluate the string
+    return ast.literal_eval(s)
+
+
 def parse_logs(
     scenario: BenchmarkScenario,
     engine: PlatformEngineScenario,
@@ -1216,7 +1241,7 @@ def parse_logs(
                 start_index += len(server_non_default_args)
                 args = line[start_index:].strip()
                 try:
-                    engine.args = ast.literal_eval(args)
+                    engine.args = convert_objects_to_dict(args)
                 except Exception:
                     logger.exception(
                         "log args dict parsing returned error converting: %s",
@@ -1569,9 +1594,11 @@ def wait_for_launcher(base_url: str, timeout: float) -> None:
     url = urljoin(base_url, "health")
     start = time.perf_counter()
     while True:
+        response_text = None
         try:
             response = requests.get(url, timeout=timeout)
             if response.status_code == HTTPStatus.OK:
+                response_text = response.text
                 status = response.json().get("status").strip()
                 logger.info("launcher health status: %s", status)
                 if status.lower() == "ok":
@@ -1587,7 +1614,9 @@ def wait_for_launcher(base_url: str, timeout: float) -> None:
             )
         except Exception as e:
             logger.info(
-                "launcher health check exception '%s'. Trying again ...", str(e)
+                "launcher health check exception response '%s' '%s'. Trying again ...",
+                response_text,
+                str(e),
             )
 
         time.sleep(0.5)
@@ -1633,6 +1662,7 @@ def populate_benchmark(
     requests_dir: str,
     parse_gpus: bool,
     write_log_per_process: bool,
+    sleep_wake: bool,
 ):
     """populate benchmark result"""
 
@@ -1654,7 +1684,7 @@ def populate_benchmark(
         metrics,
         pod_logs_str,
     )
-    if benchmark_result.scenario.sleep_mode:
+    if sleep_wake and benchmark_result.scenario.sleep_mode:
         logger.info("%s: request sleep/wake", name)
         sleep(base_url, 1, REQUEST_TIMEOUT)
         wake(base_url, REQUEST_TIMEOUT)
@@ -1711,13 +1741,121 @@ def populate_benchmark(
         )
 
 
+def get_fma_launcher_endpoints(
+    v1: client.CoreV1Api,
+    api,
+    namespace: str,
+    model_list: str,
+    fma_launcher_port: str,
+    benchmark_result: BenchmarkResult,
+) -> list[(str, str)]:
+    """returns all connected launchers endpoints and populates BenchmarkResult engine"""
+
+    endpoints = []
+
+    model_list = model_list.replace(",", " ").split()
+    requester_pods = v1.list_namespaced_pod(
+        namespace=namespace, label_selector="llm-d.ai/role=requester"
+    )
+    if not requester_pods.items:
+        logger.info("No FMA requester pods found.")
+        return endpoints
+
+    for pod in requester_pods.items:
+        requester_pod_name = pod.metadata.name
+        launcher_pod_name = pod.metadata.labels.get("dual-pods.llm-d.ai/dual")
+        if launcher_pod_name is None or launcher_pod_name == "":
+            logger.info(
+                "No launcher pod name found for requester pod '%s'.", requester_pod_name
+            )
+            continue
+
+        inference_server_config_name = pod.metadata.annotations.get(
+            "dual-pods.llm-d.ai/inference-server-config"
+        )
+        if inference_server_config_name is None or inference_server_config_name == "":
+            logger.info(
+                "No inference server config name found for requester pod '%s'.",
+                requester_pod_name,
+            )
+            continue
+
+        vllm_port = None
+        try:
+            inference_server = api.get_namespaced_custom_object(
+                group="fma.llm-d.ai",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="inferenceserverconfigs",
+                name=inference_server_config_name,
+            )
+            vllm_port = (
+                inference_server.get("spec", {})
+                .get("modelServerConfig", {})
+                .get("port")
+            )
+            if vllm_port is None:
+                continue
+            options = (
+                inference_server.get("spec", {})
+                .get("modelServerConfig", {})
+                .get("options")
+            )
+            match = re.search(r"--model\s+(\S+)", options)
+            model = match.group(1) if match else None
+            if model is None or model not in model_list:
+                logger.info(
+                    "inference server config '%s' model '%s' not found in model list '%s'.",
+                    inference_server_config_name,
+                    model,
+                    ", ".join(model_list.join),
+                )
+                continue
+        except ApiException:
+            logger.exception(
+                "error accessing inference server config '%s'",
+                inference_server_config_name,
+            )
+            continue
+
+        launcher_pod_ip = None
+        try:
+            launcher_pod = client.CoreV1Api().read_namespaced_pod(
+                name=launcher_pod_name, namespace=namespace
+            )
+            launcher_pod_ip = launcher_pod.status.pod_ip
+            if launcher_pod_ip is None:
+                logger.info("Launcher pod '%s' ip not found.", launcher_pod_name)
+                continue
+
+            for container in pod.spec.containers:
+                engine = PlatformEngineScenario()
+                engine.name = container.image
+                benchmark_result.scenario.platform.engines.append(engine)
+        except client.ApiException:
+            logger.exception("error accessing launcher pod '%s'", launcher_pod_name)
+            continue
+
+        endpoints.append(
+            (
+                f"http://{launcher_pod_ip}:{fma_launcher_port}",
+                f"http://{launcher_pod_ip}:{vllm_port}",
+            )
+        )
+
+    return endpoints
+
+
 def main():
     """main entry point"""
 
     start_time = datetime.now().timestamp()
 
-    envs = get_env_variables(["LLMDBENCH_CONTROL_WORK_DIR"])
-    requests_dir = envs[0]
+    write_log_per_process = False
+
+    envs = get_env_variables(["LLMDBENCH_CONTROL_WORK_DIR", "LLMDBENCH_DEPLOY_METHODS"])
+    requests_dir = envs["LLMDBENCH_CONTROL_WORK_DIR"]
+    methods = envs["LLMDBENCH_DEPLOY_METHODS"]
     Path(requests_dir).mkdir(parents=True, exist_ok=True)
     file_handler = logging.FileHandler(f"{requests_dir}/stdout.log")
     file_handler.setLevel(logging.DEBUG)
@@ -1730,115 +1868,187 @@ def main():
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
 
-    envs = get_env_variables(
-        [
-            "LLMDBENCH_HARNESS_NAMESPACE",
-            "LLMDBENCH_HARNESS_STACK_ENDPOINT_URL",
-            "LLMDBENCH_VLLM_COMMON_VLLM_LOAD_FORMAT",
-            "LLMDBENCH_VLLM_STANDALONE_LAUNCHER",
-            "LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_URL",
-            "LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_VLLM_URL",
-            "LLMDBENCH_VLLM_STANDALONE_LAUNCHER_VLLM_PORT",
-        ]
+    keys = [
+        "LLMDBENCH_DEPLOY_MODEL_LIST",
+        "LLMDBENCH_HARNESS_NAMESPACE",
+        "LLMDBENCH_HARNESS_STACK_ENDPOINT_URL",
+        "LLMDBENCH_VLLM_COMMON_VLLM_LOAD_FORMAT",
+        "LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_URL",
+        "LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_VLLM_URL",
+    ]
+    if "standalone" in methods:
+        keys.extend(
+            [
+                "LLMDBENCH_VLLM_STANDALONE_LAUNCHER",
+                "LLMDBENCH_VLLM_STANDALONE_LAUNCHER_VLLM_PORT",
+            ]
+        )
+    if "fma" in methods:
+        keys.extend(["LLMDBENCH_FMA_LAUNCHER_CONFIG_PORT"])
+
+    envs = get_env_variables(keys)
+
+    model_list = envs["LLMDBENCH_DEPLOY_MODEL_LIST"]
+    namespace = envs["LLMDBENCH_HARNESS_NAMESPACE"]
+    endpoint_url = envs["LLMDBENCH_HARNESS_STACK_ENDPOINT_URL"]
+    load_format = LoadFormat.loadformat_from_value(
+        envs["LLMDBENCH_VLLM_COMMON_VLLM_LOAD_FORMAT"]
     )
-
-    namespace = envs[0]
-    endpoint_url = envs[1]
-    load_format = LoadFormat.loadformat_from_value(envs[2])
-    launcher = envs[3].strip().lower() == "true"
-    endpoint_launcher_url = envs[4]
-    endpoint_launcher_vllm_url = envs[5]
-    launcher_vllm_port = envs[6]
-
-    write_log_per_process = False
-
-    domain = urlparse(endpoint_url).netloc
-    arr = domain.split(".")
-    if len(arr) == 0:
-        raise RuntimeError(f"Unable to extract service name from {domain}.")
+    launcher = (
+        envs["LLMDBENCH_VLLM_STANDALONE_LAUNCHER"].strip().lower() == "true"
+        if "standalone" in methods
+        else False
+    )
+    endpoint_launcher_url = envs["LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_URL"]
+    endpoint_launcher_vllm_url = envs[
+        "LLMDBENCH_HARNESS_STACK_ENDPOINT_LAUNCHER_VLLM_URL"
+    ]
+    launcher_vllm_port = (
+        envs["LLMDBENCH_VLLM_STANDALONE_LAUNCHER_VLLM_PORT"]
+        if "standalone" in methods
+        else None
+    )
+    fma_launcher_port = (
+        envs["LLMDBENCH_FMA_LAUNCHER_CONFIG_PORT"] if "fma" in methods else 0
+    )
 
     # Load Kubernetes configuration
     config.load_kube_config()
-
     v1 = client.CoreV1Api()
-
-    pod_info = None
-    try:
-        pod_info = get_vllm_pod_info(v1, namespace, arr[0])
-        for container in pod_info.containers:
-            logger.info(
-                "vLLM standalone pod name: %s container: %s image: %s",
-                pod_info.name,
-                container.name,
-                container.image,
-            )
-
-    except Exception as e:
-        logger.info(
-            "Skipping harness because vLLM standalone pod not found: %s", str(e)
-        )
-        return
+    api = client.CustomObjectsApi()
 
     benchmark_result = BenchmarkResult()
-    for container in pod_info.containers:
-        engine = PlatformEngineScenario()
-        engine.name = container.image
-        benchmark_result.scenario.platform.engines.append(engine)
-
-    benchmark_name = "vLLM Standalone"
-    try:
-        populate_benchmark(
-            benchmark_name,
-            VllmPodLogs(v1, namespace, pod_info.name, pod_info.containers[0].name),
-            load_format,
-            endpoint_url,
-            benchmark_result,
-            benchmark_result.scenario.platform.engines[0],
-            requests_dir,
-            True,
-            write_log_per_process,
-        )
-    except Exception:
-        logger.exception("error on benchmark %s", benchmark_name)
-
-    # Benchmark launcher if requested
-    if launcher:
-        benchmark_name = "vLLM Launcher"
+    if "fma" in methods:
         try:
-            logger.info("Benchmark launcher start...")
-            wait_for_launcher(endpoint_launcher_url, REQUEST_TIMEOUT)
-            instance_id = get_vllm_server_instance(
-                endpoint_launcher_url, REQUEST_TIMEOUT
+            logger.info("Benchmark FMA launcher start...")
+            launcher_endpoints = get_fma_launcher_endpoints(
+                v1, api, namespace, model_list, fma_launcher_port, benchmark_result
             )
-            if instance_id is None:
-                # grab vLLM arguments from standalone
-                args = convert_vllm_args(
-                    benchmark_result.scenario.platform.engines[0].args,
-                    launcher_vllm_port,
-                )
-                # start vLLM server
-                instance_id = start_vllm_server(
-                    endpoint_launcher_url,
-                    args,
-                    REQUEST_TIMEOUT,
-                )
-                wait_for_vllm(endpoint_launcher_vllm_url, REQUEST_TIMEOUT)
+            logger.info(
+                "FMA launchers endpoints: %s",
+                ", ".join(f"{a} - {b}" for a, b in launcher_endpoints),
+            )
+            for i, launcher_endpoint in enumerate(launcher_endpoints):
+                benchmark_name = f"vLLM FMA Launcher {i}"
+                try:
+                    logger.info("Benchmark FMA launcher '%s' start...", benchmark_name)
+                    wait_for_launcher(launcher_endpoint[0], REQUEST_TIMEOUT)
+                    instance_id = get_vllm_server_instance(
+                        launcher_endpoint[0], REQUEST_TIMEOUT
+                    )
+                    if instance_id is None:
+                        continue
 
+                    wait_for_vllm(launcher_endpoint[1], REQUEST_TIMEOUT)
+                    populate_benchmark(
+                        benchmark_name,
+                        VllmLaunchedLogs(
+                            launcher_endpoint[0], instance_id, REQUEST_TIMEOUT
+                        ),
+                        load_format,
+                        launcher_endpoint[1],
+                        benchmark_result,
+                        benchmark_result.scenario.platform.engines[i],
+                        requests_dir,
+                        False,
+                        write_log_per_process,
+                        False,
+                    )
+                except Exception:
+                    logger.exception(
+                        "error on benchmark FMA '%s' launcher", benchmark_name
+                    )
+                finally:
+                    logger.info("Benchmark FMA '%s' launcher end", benchmark_name)
+        except Exception:
+            logger.exception("error on benchmark FMA launcher")
+        finally:
+            logger.info("Benchmark FMA launcher end")
+    else:
+        domain = urlparse(endpoint_url).netloc
+        arr = domain.split(".")
+        if len(arr) == 0:
+            raise RuntimeError(f"Unable to extract service name from {domain}.")
+
+        pod_info = None
+        try:
+            pod_info = get_vllm_pod_info(v1, namespace, arr[0])
+            for container in pod_info.containers:
+                logger.info(
+                    "vLLM standalone pod name: %s container: %s image: %s",
+                    pod_info.name,
+                    container.name,
+                    container.image,
+                )
+        except Exception as e:
+            logger.info(
+                "Skipping harness because vLLM standalone pod not found: %s", str(e)
+            )
+            return
+
+        for container in pod_info.containers:
+            engine = PlatformEngineScenario()
+            engine.name = container.image
+            benchmark_result.scenario.platform.engines.append(engine)
+
+        benchmark_name = "vLLM Standalone"
+        try:
             populate_benchmark(
                 benchmark_name,
-                VllmLaunchedLogs(endpoint_launcher_url, instance_id, REQUEST_TIMEOUT),
+                VllmPodLogs(v1, namespace, pod_info.name, pod_info.containers[0].name),
                 load_format,
-                endpoint_launcher_vllm_url,
+                endpoint_url,
                 benchmark_result,
-                benchmark_result.scenario.platform.engines[1],
+                benchmark_result.scenario.platform.engines[0],
                 requests_dir,
-                False,
+                True,
                 write_log_per_process,
+                True,
             )
         except Exception:
-            logger.exception("error on benchmark %s", benchmark_name)
-        finally:
-            logger.info("Benchmark launcher end")
+            logger.exception("error on benchmark '%s'", benchmark_name)
+
+        # Benchmark launcher if requested
+        if launcher:
+            benchmark_name = "vLLM Launcher"
+            try:
+                logger.info("Benchmark launcher start...")
+                wait_for_launcher(endpoint_launcher_url, REQUEST_TIMEOUT)
+                instance_id = get_vllm_server_instance(
+                    endpoint_launcher_url, REQUEST_TIMEOUT
+                )
+                if instance_id is None:
+                    # grab vLLM arguments from standalone
+                    args = convert_vllm_args(
+                        benchmark_result.scenario.platform.engines[0].args,
+                        launcher_vllm_port,
+                    )
+                    # start vLLM server
+                    instance_id = start_vllm_server(
+                        endpoint_launcher_url,
+                        args,
+                        REQUEST_TIMEOUT,
+                    )
+                    wait_for_vllm(endpoint_launcher_vllm_url, REQUEST_TIMEOUT)
+
+                populate_benchmark(
+                    benchmark_name,
+                    VllmLaunchedLogs(
+                        endpoint_launcher_url, instance_id, REQUEST_TIMEOUT
+                    ),
+                    load_format,
+                    endpoint_launcher_vllm_url,
+                    benchmark_result,
+                    benchmark_result.scenario.platform.engines[1],
+                    requests_dir,
+                    False,
+                    write_log_per_process,
+                    True,
+                )
+            except Exception:
+                logger.exception("error on benchmark '%s'", benchmark_name)
+            finally:
+                logger.info("Benchmark launcher end")
 
     stop_time = datetime.now().timestamp()
     benchmark_result.time.start = start_time

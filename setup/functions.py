@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-import json
 import re
 from datetime import datetime
 from typing import List, Tuple, Union, Any
@@ -1680,87 +1679,6 @@ def add_affinity(ev:dict) -> str:
 
     return affinity_string
 
-def add_fma_requester(ev:dict) -> str:
-
-    if not ev.get("fma_enabled", False):
-        return ""
-
-    config_opt = (
-        f"--model {ev['deploy_current_model']} --served-model-name {ev['deploy_current_model']} "
-        "--enforce-eager --kv-transfer-config "
-        "{\\\"kv_connector\\\":\\\"NixlConnector\\\",\\\"kv_role\\\":\\\"kv_both\\\"}"
-    )
-
-    # -- Requester configuration part of the dual-pod solution for FMA
-    requester_string = f"""
-requester:
-  enable: true
-  image: {ev['fma_requester_image_repository']}:{ev['fma_requester_image_tag']}
-  accelerators: "GPU-0"
-  inferenceServerConfig: "inference-server-config-example"
-  inferenceServerConfigAnnotations:
-    description: "Example InferenceServerConfig"
-  launcherConfig: "launcher-config-example"
-  launcherConfigAnnotations: {{}}
-  LauncherPopulationPolicy: "launcher-population-policy-example"
-  port:
-    probes: {ev['fma_requester_probe_port']}
-    spi: {ev['fma_requester_spi_port']}
-  readinessProbe:
-    initialDelaySeconds: {ev['fma_requester_readiness_probe_initial_delay']}
-    periodSeconds: {ev['fma_requester_readiness_probe_period']}
-  resources:
-    limits:
-      gpus: {ev['fma_requester_limits_gpu']}
-      cpus: {ev['fma_requester_limits_cpu']}
-      memory: {ev['fma_requester_limits_memory']}
-  modelServerConfig:
-    annotations: {{}}
-    labels: {{}}
-    env_vars:
-      VLLM_SERVER_DEV_MODE: "1"
-      VLLM_USE_V1: "1"
-      VLLM_LOGGING_LEVEL: "DEBUG"
-      HF_HOME: "/model-cache"
-    options: "{config_opt}"
-    port: 8005
-  launcherConfigSpec:
-    maxSleepingInstances: 3
-    podTemplate:
-      spec:
-        runtimeClassName: nvidia-legacy
-        containers:
-          - name: inference-server
-            image: {ev['fma_launcher_image_repository']}:{ev['fma_launcher_image_tag']}
-            imagePullPolicy: IfNotPresent
-            mountModelVolume: true
-            env:
-              - name: HOME
-                value: "/model-cache"
-              - name: VLLM_CACHE_ROOT
-                value: "/model-cache/vllm"
-              - name: FLASHINFER_WORKSPACE_DIR
-                value: "/model-cache/flashinfer"
-              - name: TRITON_CACHE_DIR
-                value: "/model-cache/triton"
-              - name: XDG_CACHE_HOME
-                value: "/model-cache"
-              - name: XDG_CONFIG_HOME
-                value: "/model-cache/config"
-            command:
-              - /app/launcher.py
-              - --host=0.0.0.0
-              - --log-level=info
-              - --port=8001
-  launcherPopulationPolicySpec:
-    enhancedNodeSelector:
-      labelSelector:
-        matchLabels:
-          nvidia.com/gpu.present: "true"
-    launcherCount: 1
-"""
-    return requester_string
-
 def add_accelerator(ev:dict, identifier: str = "decode") -> str:
 
     if ev[f"vllm_modelservice_{identifier}_accelerator_resource"] == "auto" :
@@ -2034,6 +1952,12 @@ def is_standalone_deployment(ev: dict) -> bool:
     """
     return ev["control_environment_type_standalone_active"]
 
+def is_fma_deployment(ev: dict) -> bool:
+    """
+    Returns true if it is a fma deployment
+    """
+    return ev["control_environment_type_fma_active"]
+
 def get_accelerator_type(ev: dict) -> str | None:
     """
     Attempts to get the GPU type
@@ -2270,7 +2194,7 @@ def wait_for_pods_created_running_ready(api_client, ev: dict, component_nr: int,
 
     dry_run = ev["control_dry_run"]
     result = 0
-    if component in [ "both", "decode", "prefill" ] :
+    if component in [ "both", "decode", "prefill", "requester"] :
         label_selector=f"llm-d.ai/model={ev['deploy_current_model_id_label']},llm-d.ai/role={component}"
         silent = False
     elif component in [ "gateway" ] :
