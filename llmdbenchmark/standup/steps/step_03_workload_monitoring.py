@@ -43,7 +43,15 @@ class WorkloadMonitoringStep(Step):
                 "skipping resource validation and capacity planning"
             )
         else:
-            self._validate_accelerator(cmd, context, errors)
+            self._warn_not_ready_nodes(cmd, context)
+            if plan_config and not self._any_method_uses_accelerator(plan_config):
+                context.logger.log_info(
+                    "Skipping accelerator validator: no method requests "
+                    "accelerators (accelerator.count=0 across methods) and "
+                    "default 'nvidia.com/gpu' is inherited from defaults.yaml"
+                )
+            else:
+                self._validate_accelerator(cmd, context, errors)
             self._validate_network(cmd, context, plan_config, errors)
             self._validate_node_selectors(cmd, context, plan_config, errors)
             self._capacity_planner_sanity_check(cmd, context, plan_config, errors)
@@ -73,6 +81,58 @@ class WorkloadMonitoringStep(Step):
     def _is_modelservice(context: ExecutionContext) -> bool:
         """Check if the deployment includes modelservice."""
         return "modelservice" in getattr(context, "deployed_methods", [])
+
+    @staticmethod
+    def _any_method_uses_accelerator(plan_config: dict) -> bool:
+        """Return True if any deployment method requests accelerators (count > 0)."""
+        for method in ("standalone", "decode", "prefill"):
+            method_config = plan_config.get(method, {}) or {}
+            count = method_config.get("accelerator", {}).get("count", 0)
+            try:
+                if int(count) > 0:
+                    return True
+            except (ValueError, TypeError):
+                continue
+        return False
+
+    @staticmethod
+    def _is_node_ready(node: dict) -> bool:
+        """Return True if the node has a Ready condition with status True."""
+        for cond in node.get("status", {}).get("conditions", []):
+            if cond.get("type") == "Ready":
+                return cond.get("status") == "True"
+        return False
+
+    def _warn_not_ready_nodes(
+        self, cmd: CommandExecutor, context: ExecutionContext
+    ) -> None:
+        """Log a warning for any cluster nodes that are not in Ready state."""
+        if context.dry_run:
+            return
+
+        result = cmd.kube("get", "nodes", "-o", "json")
+        if not result.success or not result.stdout.strip():
+            return
+
+        try:
+            data = json.loads(result.stdout)
+        except (json.JSONDecodeError, ValueError):
+            return
+
+        not_ready: list[str] = []
+        for node in data.get("items", []):
+            if self._is_node_ready(node):
+                continue
+            name = node.get("metadata", {}).get("name")
+            if name:
+                not_ready.append(name)
+
+        if not_ready:
+            context.logger.log_warning(
+                f"NotReady node(s) detected and excluded from validation: "
+                f"{', '.join(not_ready)}. "
+                "Pods will not be scheduled on these nodes."
+            )
 
     def _load_resource_config(
         self, context: ExecutionContext, plan_config: dict
@@ -125,6 +185,8 @@ class WorkloadMonitoringStep(Step):
         total = 0
         node_count = 0
         for node in data.get("items", []):
+            if not WorkloadMonitoringStep._is_node_ready(node):
+                continue
             capacity = node.get("status", {}).get("capacity", {})
             val = capacity.get(resource_key)
             if val is not None:
@@ -226,6 +288,21 @@ class WorkloadMonitoringStep(Step):
                 for key, value in ns.items():
                     selectors.append((f"{method}.nodeSelector", key, str(value)))
 
+            try:
+                method_accel_count = int(
+                    method_config.get("accelerator", {}).get("count", 0)
+                )
+            except (ValueError, TypeError):
+                method_accel_count = 0
+
+            if method_accel_count == 0:
+                context.logger.log_info(
+                    f"Skipping {method}.acceleratorType validation: "
+                    f"{method}.accelerator.count=0 "
+                    "(label inherited from defaults.yaml)"
+                )
+                continue
+
             accel_type = method_config.get("acceleratorType", {})
             label_key = accel_type.get("labelKey", "")
             label_value = accel_type.get("labelValue", "")
@@ -277,6 +354,7 @@ class WorkloadMonitoringStep(Step):
             return [
                 node.get("metadata", {}).get("labels", {})
                 for node in data.get("items", [])
+                if self._is_node_ready(node)
             ]
         except (json.JSONDecodeError, ValueError):
             return None
