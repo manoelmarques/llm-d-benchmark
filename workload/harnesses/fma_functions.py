@@ -5,6 +5,7 @@ Benchmark FMA functions
 from __future__ import annotations
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
+from enum import StrEnum
 import logging
 import time
 from typing import Any
@@ -26,7 +27,7 @@ from nop_functions import (
     get_vllm_server_instances,
     wait_for_vllm,
     populate_benchmark,
-    VllmLaunchedLogs,
+    VllmLauncherInfo,
     LoadFormat,
 )
 
@@ -62,15 +63,20 @@ class FMARequesterInfo:
 
 
 @dataclass
-class FMALauncherInfo:
+class FMALauncherInfo:  # pylint: disable=too-many-instance-attributes
     """Launcher info"""
 
+    v1: client.CoreV1Api | None = None
+    namespace: str = ""
+    pod_name: str = ""
+    container_name: str = ""
     name: str = ""
     requester_info: FMARequesterInfo = field(default_factory=FMARequesterInfo)
     vllm_instance_id: str | None = None
     launcher_endpoint: str = ""
     vllm_endpoint: str = ""
     ttft: float = 0.0
+    actuation_condition: FMAActuationCondition | None = None
 
     def dump(self) -> dict[str, Any]:
         """Convert FMALauncherInfo to dict.
@@ -80,7 +86,7 @@ class FMALauncherInfo:
         """
         dump_dict = {}
         for f in fields(self):
-            if f.name == "vllm_instance_id":
+            if f.name == "v1":
                 continue
             value = getattr(self, f.name)
             dump_dict[f.name] = (
@@ -92,12 +98,28 @@ class FMALauncherInfo:
         return dump_dict
 
 
+class FMAActuationCondition(StrEnum):
+    """Type of actuation"""
+
+    T_LUKE_WARM = "T_luke_warm"  # when new launcher created by DPC + new vllm
+    T_WARM = "T_warm"  # when existing launcher creates new vllm
+    T_HOT = "T_hot"  # when waking up sleeping vllm
+
+    def dump(self) -> str:
+        """Convert FMAActuationCondition to str.
+
+        Returns:
+            str: FMAActuationCondition value.
+        """
+        return self.value
+
+
 @dataclass
 class FMAMetricsIteration:
     """FMA Metrics Iteration"""
 
-    iteration: int = 0
-    launcher_infos: list[FMALauncherInfo] = field(default_factory=list[FMALauncherInfo])
+    iteration: int
+    launcher_infos: list[FMALauncherInfo]
 
     def dump(self) -> dict[str, Any]:
         """Convert FMAMetricsIteration to dict.
@@ -162,7 +184,8 @@ class FMAMetrics:
         return dump_dict
 
 
-def get_fma_launcher_infos(  # pylint: disable=too-many-locals
+def get_fma_launcher_infos(  # pylint: disable=too-many-locals,too-many-arguments,too-many-positional-arguments
+    v1: client.CoreV1Api,
     api,
     requester_infos: list[FMARequesterInfo],
     namespace: str,
@@ -238,6 +261,10 @@ def get_fma_launcher_infos(  # pylint: disable=too-many-locals
                 engine.image = container.image
                 benchmark_result.scenario.platform.engines[engine.name] = engine
                 launcher_info = FMALauncherInfo()
+                launcher_info.v1 = v1
+                launcher_info.namespace = launcher_pod.metadata.namespace
+                launcher_info.pod_name = launcher_pod.metadata.name
+                launcher_info.container_name = container.name
                 launcher_info.name = engine.name
                 launcher_info.requester_info = requester_info
                 launcher_info.launcher_endpoint = (
@@ -577,9 +604,16 @@ def inspect_vllm_instances(
 
     logger.info("Launcher '%s' info start:", launcher_info.name)
     for instance_id in instance_ids:
-        pod_logs = VllmLaunchedLogs(
-            launcher_info.launcher_endpoint, instance_id, timeout, False
-        ).get_logs()
+        pod_logs = VllmLauncherInfo(
+            launcher_info.v1,
+            launcher_info.namespace,
+            launcher_info.pod_name,
+            launcher_info.container_name,
+            timeout,
+            launcher_info.launcher_endpoint,
+            instance_id,
+            False,
+        ).get_vllm_logs()
         scenario = BenchmarkScenario()
         engine = PlatformEngineScenario()
         metrics = BenchmarkVllmMetrics()
@@ -600,7 +634,7 @@ def inspect_vllm_instances(
     logger.info("Launcher '%s' info end.", launcher_info.name)
 
 
-def benchmark_fma(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches
+def benchmark_fma(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches,too-many-statements
     v1: client.CoreV1Api,
     api: client.CustomObjectsApi,
     apps_v1: client.AppsV1Api,
@@ -643,7 +677,7 @@ def benchmark_fma(  # pylint: disable=too-many-arguments,too-many-positional-arg
 
     fma_metrics = FMAMetrics()
     benchmark_result.extra_metrics.append(fma_metrics)
-    for iteration in range(1, iterations + 1):
+    for iteration in range(1, iterations + 1):  # pylint: disable=too-many-nested-blocks
         try:
             logger.info("Benchmark FMA iteration '%d' start...", iteration)
             # scale replicaset to 1
@@ -656,6 +690,7 @@ def benchmark_fma(  # pylint: disable=too-many-arguments,too-many-positional-arg
                 )
 
             launcher_infos = get_fma_launcher_infos(
+                v1,
                 api,
                 requester_infos,
                 namespace,
@@ -668,7 +703,7 @@ def benchmark_fma(  # pylint: disable=too-many-arguments,too-many-positional-arg
                     instance_ids = get_vllm_server_instances(
                         launcher_info.launcher_endpoint, timeout
                     )
-                    inspect_vllm_instances(instance_ids, launcher_info, timeout)
+                    inspect_vllm_instances(instance_ids, launcher_info, wait)
                     launcher_info.vllm_instance_id = (
                         instance_ids[-1] if len(instance_ids) > 0 else None
                     )
@@ -704,10 +739,14 @@ def benchmark_fma(  # pylint: disable=too-many-arguments,too-many-positional-arg
                         continue
 
                     populate_benchmark(
-                        VllmLaunchedLogs(
+                        VllmLauncherInfo(
+                            launcher_info.v1,
+                            launcher_info.namespace,
+                            launcher_info.pod_name,
+                            launcher_info.container_name,
+                            wait,
                             launcher_info.launcher_endpoint,
                             launcher_info.vllm_instance_id,
-                            timeout,
                             False,
                         ),
                         model,
@@ -722,14 +761,43 @@ def benchmark_fma(  # pylint: disable=too-many-arguments,too-many-positional-arg
                         timeout,
                         wait,
                     )
+                    launcher_info.actuation_condition = None
+                    if (
+                        len(
+                            benchmark_result.vllm_metrics[launcher_info.name].sleep_wake
+                        )
+                        >= 2
+                    ):
+                        sleep = (
+                            benchmark_result.vllm_metrics[launcher_info.name]
+                            .sleep_wake[-1]
+                            .metrics_type()
+                            == "sleep"
+                        )
+                        wake = (
+                            benchmark_result.vllm_metrics[launcher_info.name]
+                            .sleep_wake[-2]
+                            .metrics_type()
+                            == "wake"
+                        )
+                        if sleep and wake:
+                            launcher_info.actuation_condition = (
+                                FMAActuationCondition.T_HOT
+                            )
+
+                    if launcher_info.actuation_condition is None:
+                        launcher_info.actuation_condition = (
+                            FMAActuationCondition.T_WARM
+                            if launcher_info.name.startswith("launcher-fma-")
+                            else FMAActuationCondition.T_LUKE_WARM
+                        )
+
                 except Exception as e:
                     raise RuntimeError(
                         f"error on benchmark FMA '{launcher_info.name}' launcher"
                     ) from e
 
-            fma_metrics_iteration = FMAMetricsIteration()
-            fma_metrics_iteration.iteration = iteration
-            fma_metrics_iteration.launcher_infos = launcher_infos
+            fma_metrics_iteration = FMAMetricsIteration(iteration, launcher_infos)
             fma_metrics.iterations.append(fma_metrics_iteration)
         finally:
             logger.info("Benchmark FMA iteration '%d' end.", iteration)
