@@ -77,6 +77,9 @@ Provisions model infrastructure from a specification. Implicitly generates a pla
 | `--parallel` | `LLMDBENCH_PARALLEL` | Max parallel stacks (default: 4) |
 | `-k` / `--kubeconfig` | `LLMDBENCH_KUBECONFIG` / `KUBECONFIG` | Kubeconfig path |
 | `--skip-smoketest` | -- | Skip automatic post-standup smoketests |
+| `--standalone-deploy-timeout` | `LLMDBENCH_STANDALONE_DEPLOY_TIMEOUT` | Seconds to wait for the vLLM pods to deploy during standup in standalone mode. |
+| `--gateway-deploy-timeout` | `LLMDBENCH_GATEWAY_DEPLOY_TIMEOUT` | Seconds to wait for gateway infrastructure pods to deploy during standup with modelservice. |
+| `--modelservice-deploy-timeout` | `LLMDBENCH_MODELSERVICE_DEPLOY_TIMEOUT` | Seconds to wait for decode, prefill and inference pool pods to deploy during standup with modelservice (Generic timeout for Step 9). |
 
 ### smoketest (`smoketest.py`)
 
@@ -118,6 +121,7 @@ Executes benchmark experiments against deployed infrastructure.
 | `-U` / `--endpoint-url` | `LLMDBENCH_ENDPOINT_URL` | Explicit endpoint URL (run-only mode) |
 | `-c` / `--config` | -- | Run config YAML file (run-only mode) |
 | `--generate-config` | -- | Generate run config and exit |
+| `--data-access-timeout` | `LLMDBENCH_DATA_ACCESS_TIMEOUT` | Seconds to wait for the harness data-access pod to become Ready. |
 
 ### teardown (`teardown.py`)
 
@@ -156,3 +160,4 @@ Orchestrates a full DoE experiment with automatic standup/run/teardown per setup
 | `-d` / `--debug` | -- | Debug mode (sleep infinity) |
 | `--stop-on-error` | -- | Abort experiment on first failure |
 | `--skip-teardown` | -- | Leave stacks running after each treatment |
+| `--data-access-timeout` | `LLMDBENCH_DATA_ACCESS_TIMEOUT` | Seconds to wait for the harness data-access pod to become Ready. |
