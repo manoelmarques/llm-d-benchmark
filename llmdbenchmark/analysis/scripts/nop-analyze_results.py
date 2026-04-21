@@ -173,7 +173,13 @@ def write_vllm_metrics(  # pylint: disable=too-many-locals,too-many-statements
     for metrics_metadata in metadatas:
         name = metrics_metadata["name"]
         pod_start = metrics_metadata["pod_start"]["value"]
-        vllm_start = metrics_metadata["vllm_start"]["value"]
+        vllm_start = (
+            metrics_metadata["vllm_ready_timestamp"]["value"]
+            - metrics_metadata["vllm_start_timestamp"]["value"]
+            if metrics_metadata["vllm_ready_timestamp"]["value"]
+            > metrics_metadata["vllm_start_timestamp"]["value"]
+            else 0.0
+        )
         elapsed = metrics_metadata["load"]["time"]["value"]
         rate = metrics_metadata["load"]["transfer_rate"]["value"]
         dynamo_bytecode_transform = metrics_metadata["dynamo_bytecode_transform"][
@@ -215,10 +221,21 @@ def write_vllm_metrics(  # pylint: disable=too-many-locals,too-many-statements
 
         metrics_sleep_wake = metrics_metadata.get("sleep_wake", [])
         if len(metrics_sleep_wake) > 0:
+            file.write(
+                "\n    After: Time elapsed after the previous vLLM sleep, wake, or ready state\n"
+            )
+            file.write(
+                "    Elapsed: Time it took to transition to vLLM sleep or wait\n\n"
+            )
             pandas_datas = []
+            prev_timestamp = metrics_metadata["vllm_ready_timestamp"]["value"]
             for sleep_wake in metrics_sleep_wake:
+                curr_timestamp = sleep_wake["timestamp"]["value"]
+                diff = curr_timestamp - prev_timestamp if prev_timestamp > 0 else None
+                prev_timestamp = curr_timestamp
                 data = {
                     "Type": sleep_wake["type"],
+                    "After(secs)": diff,
                     "Elapsed(secs)": sleep_wake["time"]["value"],
                     "GPU Freed(GiB)": None,
                     "GPU In Use(GiB)": None,
@@ -232,6 +249,7 @@ def write_vllm_metrics(  # pylint: disable=too-many-locals,too-many-statements
             file.write("\n")
             header = (
                 f"{'Type':<6} "
+                f"{'After(secs)':>13} "
                 f"{'Elapsed(secs)':>13} "
                 f"{'GPU Freed(GiB)':>15} "
                 f"{'GPU In Use(GiB)':>15}"
@@ -242,6 +260,7 @@ def write_vllm_metrics(  # pylint: disable=too-many-locals,too-many-statements
                 file.write(
                     f"{' ' * left_padding}"
                     f"{r['Type']:<6} "
+                    f"{fmt(r['After(secs)'], '13.3f')} "
                     f"{fmt(r['Elapsed(secs)'], '13.3f')} "
                     f"{fmt(r['GPU Freed(GiB)'], '15.2f')} "
                     f"{fmt(r['GPU In Use(GiB)'], '15.2f')}\n"
@@ -267,7 +286,7 @@ def write_extra_metrics(file: io.TextIOWrapper, metadatas: list[dict]):
             logger.info("Unhandled extra metrics name '%s'", metrics_metadata["name"])
 
 
-def write_fma_metrics(  # pylint: disable=too-many-locals
+def write_fma_metrics(  # pylint: disable=too-many-locals,too-many-statements
     file: io.TextIOWrapper, iterations: list[dict], left_padding: int
 ):
     """prints FMA metrics"""

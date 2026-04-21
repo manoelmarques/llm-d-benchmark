@@ -2147,9 +2147,13 @@ def import_nop(results_file: str) -> BenchmarkReportV01:
                 "units": Units.S,
                 "value": vllm_metrics["pod_start"],
             },
-            "vllm_start": {
+            "vllm_start_timestamp": {
                 "units": Units.S,
-                "value": vllm_metrics["vllm_start"],
+                "value": vllm_metrics["vllm_start_timestamp"],
+            },
+            "vllm_ready_timestamp": {
+                "units": Units.S,
+                "value": vllm_metrics["vllm_ready_timestamp"],
             },
             "load": {
                 "time": {

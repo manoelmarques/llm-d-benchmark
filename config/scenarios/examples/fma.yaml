@@ -25,7 +25,7 @@ scenario:
 
     fma:
       enabled: true
-      iterations: 1
+      iterations: 5
 
     workDir: "~/data/fma"
 
@@ -48,6 +48,6 @@ scenario:
 
     images:
       benchmark:
-        repository: ghcr.io/llm-d/llm-d-benchmark
-        tag: nightly
+        repository: quay.io/manoelmrqs/llm-d-benchmark
+        tag: 0.0.3
 

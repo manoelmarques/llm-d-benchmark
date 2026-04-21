@@ -711,7 +711,8 @@ class BenchmarkVllmMetrics:
     # pylint: disable=too-many-instance-attributes
     name: str = ""
     pod_start: float = 0.0
-    vllm_start: float = 0.0
+    vllm_start_timestamp: float = 0.0
+    vllm_ready_timestamp: float = 0.0
     load: MetricsLoad = field(default_factory=MetricsLoad)
     size: float = 0.0
     dynamo_bytecode_transform: float = 0.0
@@ -972,10 +973,12 @@ def extract_datetime(log_line: str) -> datetime | None:
     value = match.group()
 
     # Define the format string that matches the input time string
-    time_format = "%m-%d %H:%M:%S.%f" if "." in value else "%m-%d %H:%M:%S"
+    time_format = "%Y-%m-%d %H:%M:%S.%f" if "." in value else "%Y-%m-%d %H:%M:%S"
 
     try:
-        return datetime.strptime(value, time_format)
+        # Add current year in front of the string
+        value_with_year = f"{datetime.now().year}-{value}"
+        return datetime.strptime(value_with_year, time_format)
     except ValueError:
         logger.info(
             "Failed converting time value '%s' using format '%s'",
@@ -1287,19 +1290,22 @@ def parse_logs(  # pylint: disable=too-many-locals,too-many-branches,too-many-st
     args = None
     sleep_gpu_freed = 0.0
     sleep_gpu_in_use = 0.0
-    start_timestamp = None
     for log in logs:
         line = log.line.strip()
 
-        if start_timestamp is None and plugins_init in line:
-            start_timestamp = log.timestamp
+        if metrics.vllm_start_timestamp == 0.0 and plugins_init in line:
+            metrics.vllm_start_timestamp = log.timestamp.astimezone(
+                timezone.utc
+            ).timestamp()
 
         if (
             available_routes in line
-            and start_timestamp is not None
+            and metrics.vllm_start_timestamp > 0
             and log.timestamp is not None
         ):
-            metrics.vllm_start = (log.timestamp - start_timestamp).total_seconds()
+            metrics.vllm_ready_timestamp = log.timestamp.astimezone(
+                timezone.utc
+            ).timestamp()
 
         if args is None:
             start_index = line.find(server_non_default_args)
