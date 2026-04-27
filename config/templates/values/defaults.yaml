@@ -94,11 +94,19 @@ _anchors:
   pull_always: &pull_always Always
   pull_if_not_present: &pull_if_not_present IfNotPresent
 
-  # Chart versions
-  istio_version: &istio_version 1.29.2
-  agentgateway_version: &agentgateway_version v1.0.1
-  lws_version: &lws_version 0.8.0
-  gaie_version: &gaie_version v1.4.0
+  # General versions
+  istio_version:                     &istio_version                     1.29.2
+  agentgateway_version:              &agentgateway_version              v1.0.1
+  lws_version:                       &lws_version                       0.8.0
+  gaie_version:                      &gaie_version                      v1.4.0
+  wva_version:                       &wva_version                       0.6.0
+  prometheus_version:                &prometheus_version                5.2.0
+  vllm-openai_version:               &vllm-openai_version               auto
+  llm-d-inference-scheduler_version: &llm-d-inference-scheduler_version v0.7.1
+  llm-d-routing-sidecar_version:     &llm-d-routing-sidecar_version     v0.7.1
+  llm-d-uds-tokenizer_version:       &llm-d-uds-tokenizer_version       v0.7.1
+  llm-d-cuda_version:                &llm-d-cuda_version                v0.6.0
+  llm-d-inference-sim:               &llm-d-inference-sim_version       v0.8.2
 
   # Common labels
   app_label: &app_label llm-d-benchmark-harness
@@ -326,6 +334,12 @@ huggingface:
 #                often differs from the source repo URL, so we record both.)
 #   sourcePath:  optional path within sourceRepo (e.g. a Dockerfile or subdir)
 #
+# Init containers (decode/prefill/standalone) can reference an entry from
+# this section via `imageKey: <entry>`, which expands to repo:tag (and
+# inherits pullPolicy when the block doesn't set its own).  See
+# `decode.initContainers` for usage.  Setting both `image` and `imageKey`
+# on the same entry is an error.
+#
 images:
   benchmark:
     repository: ghcr.io/llm-d/llm-d-benchmark
@@ -335,32 +349,32 @@ images:
 
   vllm:
     repository: ghcr.io/llm-d/llm-d-cuda
-    tag: auto
+    tag: *llm-d-cuda_version
     pullPolicy: *pull_if_not_present
     sourceRepo: https://github.com/llm-d/llm-d
     sourcePath: docker/Dockerfile.cuda
 
   vllmOpenai:
     repository: docker.io/vllm/vllm-openai
-    tag: auto
+    tag: *vllm-openai_version
     pullPolicy: *pull_always
     sourceRepo: https://github.com/vllm-project/vllm
 
   inferenceScheduler:
     repository: ghcr.io/llm-d/llm-d-inference-scheduler
-    tag: auto
+    tag: *llm-d-inference-scheduler_version
     pullPolicy: *pull_always
     sourceRepo: https://github.com/llm-d/llm-d-inference-scheduler
 
   routingSidecar:
     repository: ghcr.io/llm-d/llm-d-routing-sidecar
-    tag: auto
+    tag: *llm-d-routing-sidecar_version
     pullPolicy: *pull_if_not_present
     sourceRepo: https://github.com/llm-d/llm-d-routing-sidecar
 
   udsTokenizer:
     repository: ghcr.io/llm-d/llm-d-uds-tokenizer
-    tag: auto
+    tag: *llm-d-uds-tokenizer_version
     pullPolicy: *pull_if_not_present
     sourceRepo: https://github.com/llm-d/llm-d-kv-cache
     sourcePath: services/uds_tokenizer
@@ -420,11 +434,8 @@ chartVersions:
   istiod: *istio_version
   llmDInfra: auto
   llmDModelservice: auto
-  wva: 0.6.0
-  # Pinned to match the upstream WVA README's prometheus-adapter install.
-  # Newer adapter versions have broken external-metric compatibility with
-  # the chart's rule format.
-  prometheusAdapter: 5.2.0
+  wva: *wva_version
+  prometheusAdapter: *prometheus_version
   inferencePool: *gaie_version
   agentgateway: *agentgateway_version
   lws: *lws_version
@@ -565,6 +576,8 @@ inferenceExtension:
   verbosity: "1"
   # UDS tokenizer sidecar - runs alongside EPP for precise-prefix-cache scoring.
   # Enable in scenarios that use `precise-prefix-cache-scorer` with UDS tokenizer.
+  # Image is sourced from `images.udsTokenizer`; override that entry per scenario
+  # to change the version.
   sidecar:
     enabled: false
     name: tokenizer-uds
@@ -616,6 +629,8 @@ routing:
   secure: false
 
   # Proxy configuration
+  # Image is sourced from `images.routingSidecar`; override that entry per
+  # scenario to change the version.
   proxy:
     enabled: true
     imagePullPolicy: *pull_always
@@ -862,7 +877,9 @@ decode:
   # Extra pod config
   extraPodConfig: {}
 
-  # Init containers (optional, configured per scenario)
+  # Init containers (optional, configured per scenario).
+  # Each entry sets `image` directly or `imageKey` (an entry name from
+  # `images.*`); if neither is set, image defaults to `images.benchmark`.
   initContainers: []
 
   # LWS / Multinode options (optional)
@@ -973,7 +990,7 @@ prefill:
   # Extra pod config
   extraPodConfig: {}
 
-  # Init containers (optional, configured per scenario)
+  # Init containers (optional). See `decode.initContainers`.
   initContainers: []
 
 
